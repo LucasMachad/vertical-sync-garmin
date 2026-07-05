@@ -24,6 +24,13 @@ def parse_date(value: str) -> int:
     return int(value.replace("-", ""))
 
 
+def safe_filename_part(name: str) -> str:
+    """Sanitize an activity name for use in a filename (Windows-safe)."""
+    import re
+
+    return re.sub(r'[<>:"/\\|?*]', "-", name.replace(" ", "_"))
+
+
 def _race_label() -> str:
     """Human-readable race goal from the athlete config (e.g. for headers)."""
     parts = []
@@ -142,7 +149,7 @@ def _download_coros(start_d: int, end_d: int, as_json: bool) -> list[str]:
             continue
 
         fit_resp = requests.get(resp_json["data"]["fileUrl"])
-        filename = f"{a['date']}_{a['name'].replace(' ', '_')}_{a['labelId']}.fit"
+        filename = f"{a['date']}_{safe_filename_part(a['name'])}_{a['labelId']}.fit"
         (FIT_DIR / filename).write_bytes(fit_resp.content)
         downloaded.append(filename)
         if not as_json:
@@ -177,7 +184,7 @@ def _download_garmin(start_d: int, end_d: int, as_json: bool) -> list[str]:
             content = zf.read(fit_members[0])
 
         date = a["startTimeLocal"][:10].replace("-", "")
-        name = (a.get("activityName") or "activity").replace(" ", "_").replace("/", "-")
+        name = safe_filename_part(a.get("activityName") or "activity")
         filename = f"{date}_{name}_{a['activityId']}.fit"
         (FIT_DIR / filename).write_bytes(content)
         downloaded.append(filename)
