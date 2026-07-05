@@ -46,7 +46,6 @@ THRESHOLD_PACE_S_PER_KM = _profile.get("threshold_pace_s_per_km")
 
 HR_ZONES = _athlete.get("hr_zones", [])
 RACE = _athlete.get("race", {})
-COROS_TRAIL_RUN = _athlete.get("coros", {}).get("trail_run_sport_type", 102)
 
 
 # ---------------------------------------------------------------------------

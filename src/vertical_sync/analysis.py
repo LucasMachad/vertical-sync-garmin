@@ -6,6 +6,9 @@ from .config import get_plan_week
 def assess_activity(metrics: dict) -> list[dict]:
     """Assess a single activity. Returns list of observations."""
     obs = []
+    # Climbing rate, cadence and vertical-ratio thresholds below are calibrated
+    # for running biomechanics and don't transfer to cycling — skip them on the bike.
+    is_cycling = metrics.get("sport") == "cycling"
 
     # --- HR zone discipline ---
     zones = metrics.get("hr_zones", {})
@@ -74,9 +77,9 @@ def assess_activity(metrics: dict) -> list[dict]:
                 "implication": "Normal sur effort long, surveiller hydratation et alimentation",
             })
 
-    # --- Climbing efficiency ---
+    # --- Climbing efficiency (running-specific ascent-rate thresholds) ---
     ascent = metrics.get("ascent_m", 0)
-    if ascent > 100:
+    if not is_cycling and ascent > 100:
         rate = metrics.get("ascent_rate_m_h", 0)
         if rate >= 600:
             obs.append({
@@ -93,9 +96,9 @@ def assess_activity(metrics: dict) -> list[dict]:
                 "implication": "Travailler la marche active en montee (>20% pente), viser >500m/h",
             })
 
-    # --- Cadence ---
+    # --- Cadence (spm thresholds — meaningless for cycling rpm) ---
     cadence = metrics.get("avg_cadence", 0)
-    if cadence and cadence > 0:
+    if not is_cycling and cadence and cadence > 0:
         if 170 <= cadence <= 185:
             obs.append({
                 "type": "strength",
@@ -111,9 +114,9 @@ def assess_activity(metrics: dict) -> list[dict]:
                 "implication": "Viser 170+ spm pour reduire l'impact et ameliorer l'efficacite en trail",
             })
 
-    # --- Vertical ratio (terrain context) ---
+    # --- Vertical ratio (terrain context, running-specific) ---
     vr = metrics.get("vertical_ratio_m_km", 0)
-    if vr > 80:
+    if not is_cycling and vr > 80:
         obs.append({
             "type": "info",
             "category": "terrain",

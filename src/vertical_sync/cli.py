@@ -6,7 +6,7 @@ from pathlib import Path
 
 import click
 
-from .config import COROS_TRAIL_RUN, FIT_DIR, PLAN_WEEKS, RACE, get_plan_week
+from .config import FIT_DIR, PLAN_WEEKS, RACE, get_plan_week
 from .fit_parser import (
     analyze_activity,
     compute_gradient_profile,
@@ -107,7 +107,7 @@ def login(source):
 # ---------------------------------------------------------------------------
 
 def _download_coros(start_d: int, end_d: int, as_json: bool) -> list[str]:
-    """Download trail run FITs from Coros Training Hub. Returns filenames."""
+    """Download all activity FITs from Coros Training Hub. Returns filenames."""
     import os
 
     import requests
@@ -121,11 +121,7 @@ def _download_coros(start_d: int, end_d: int, as_json: bool) -> list[str]:
     ext.login(os.environ["COROS_EMAIL"], os.environ["COROS_PASSWORD"])
 
     activities = ext.get_activities(limit=50)
-    week_runs = [
-        a
-        for a in activities
-        if start_d <= a["date"] <= end_d and a["sportType"] == COROS_TRAIL_RUN
-    ]
+    week_runs = [a for a in activities if start_d <= a["date"] <= end_d]
 
     headers = {"Accesstoken": ext.access_token}
     downloaded = []
@@ -156,7 +152,7 @@ def _download_coros(start_d: int, end_d: int, as_json: bool) -> list[str]:
 
 
 def _download_garmin(start_d: int, end_d: int, as_json: bool) -> list[str]:
-    """Download trail run FITs from Garmin Connect. Returns filenames."""
+    """Download all activity FITs from Garmin Connect. Returns filenames."""
     import io
     import zipfile
 
@@ -164,16 +160,10 @@ def _download_garmin(start_d: int, end_d: int, as_json: bool) -> list[str]:
 
     client = _garmin_client()
     to_iso = lambda d: f"{d // 10000:04d}-{d % 10000 // 100:02d}-{d % 100:02d}"
-    activities = client.get_activities_by_date(
-        to_iso(start_d), to_iso(end_d), activitytype="running"
-    )
-    trail_runs = [
-        a for a in activities
-        if a.get("activityType", {}).get("typeKey") == "trail_running"
-    ]
+    activities = client.get_activities_by_date(to_iso(start_d), to_iso(end_d))
 
     downloaded = []
-    for a in trail_runs:
+    for a in activities:
         # ORIGINAL format is a zip wrapping the on-watch .fit file
         raw = client.download_activity(
             str(a["activityId"]), dl_fmt=Garmin.ActivityDownloadFormat.ORIGINAL
@@ -204,7 +194,7 @@ def _download_garmin(start_d: int, end_d: int, as_json: bool) -> list[str]:
               show_default=True, help="Data source")
 @click.option("--json", "as_json", is_flag=True, help="JSON output")
 def download(start, end, source, as_json):
-    """Download trail run FIT files for a date range (Coros or Garmin)."""
+    """Download all activity FIT files for a date range (Coros or Garmin)."""
     start_d, end_d = parse_date(start), parse_date(end)
     FIT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -423,6 +413,9 @@ def profile(target, as_json):
         path = files[0]
 
     fit_data = parse_fit(path)
+    sport = str(fit_data["sessions"][0].get("sport") or "unknown") if fit_data["sessions"] else "unknown"
+    is_cycling = sport == "cycling"
+
     records_df = pd.DataFrame(fit_data["records"])
     enriched = enrich_records(records_df)
     grad_profile = compute_gradient_profile(enriched)
@@ -431,13 +424,21 @@ def profile(target, as_json):
         click.echo("Not enough data to compute gradient profile.", err=True)
         sys.exit(1)
 
+    if is_cycling:
+        # GAP is a running energy-cost model (Minetti) and isn't valid for cycling.
+        for b in grad_profile:
+            b["avg_gap"] = "N/A"
+
     if as_json:
         click.echo(json.dumps({
             "filename": path.name,
+            "sport": sport,
             "gradient_profile": grad_profile,
         }, indent=2))
     else:
         click.echo(f"\n  PROFIL PAR GRADIENT — {path.name}")
+        if is_cycling:
+            click.echo("  (velo detecte — GAP non calcule, modele Minetti specifique a la course a pied)")
         click.echo(f"  {'─' * 68}")
         click.echo(
             f"  {'Pente':<14} {'Allure':>8} {'GAP':>8} {'FC':>5} "
@@ -568,20 +569,25 @@ def pdf():
 
 def _print_activity(m: dict):
     """Human-readable single activity output."""
+    is_cycling = m.get("sport") == "cycling"
     click.echo(f"\n{'=' * 60}")
     click.echo(f"  {m['filename']}")
-    click.echo(f"  {m['date']}")
+    click.echo(f"  {m['date']}" + (f" — {m['sport']}" if m.get("sport") else ""))
     click.echo(f"{'=' * 60}")
     click.echo(f"  Distance:      {m['distance_km']:.1f} km")
     click.echo(f"  Duree:         {m['duration']}")
     click.echo(f"  D+:            {m['ascent_m']} m")
     click.echo(f"  D-:            {m['descent_m']} m")
-    click.echo(f"  Allure moy:    {m['avg_pace']} /km")
-    if m.get("avg_gap") and m["avg_gap"] != "N/A":
-        click.echo(f"  GAP:           {m['avg_gap']} /km")
+    if is_cycling:
+        # Pace (min/km) and GAP (running energy-cost model) don't apply to cycling.
+        click.echo(f"  Vitesse moy:   {m['avg_speed_kmh']} km/h")
+    else:
+        click.echo(f"  Allure moy:    {m['avg_pace']} /km")
+        if m.get("avg_gap") and m["avg_gap"] != "N/A":
+            click.echo(f"  GAP:           {m['avg_gap']} /km")
     click.echo(f"  FC moy:        {m['avg_hr']} bpm")
     click.echo(f"  FC max:        {m['max_hr']} bpm")
-    click.echo(f"  Cadence:       {m['avg_cadence']} spm")
+    click.echo(f"  Cadence:       {m['avg_cadence']} {'rpm' if is_cycling else 'spm'}")
     click.echo(f"  D+ horaire:    {m['ascent_rate_m_h']} m/h")
     click.echo(f"  Km-effort:     {m['km_effort']}")
     if m.get("elevation"):
@@ -596,13 +602,22 @@ def _print_activity(m: dict):
             click.echo(f"    {z} {info['name']:<12} {bar} {info['pct']:5.1f}%")
     if m.get("laps"):
         click.echo(f"  Laps:")
-        click.echo(f"    {'#':<4} {'Dist':>6} {'Duree':>8} {'Allure':>8} {'FC':>4} {'D+':>5}")
-        for lap in m["laps"]:
-            click.echo(
-                f"    {lap['lap']:<4} {lap['distance_km']:>5.1f}k "
-                f"{lap['duration']:>8} {lap['pace']:>7}/km "
-                f"{lap['avg_hr']:>3} {lap['ascent_m']:>4}m"
-            )
+        if is_cycling:
+            click.echo(f"    {'#':<4} {'Dist':>6} {'Duree':>8} {'Vitesse':>9} {'FC':>4} {'D+':>5}")
+            for lap in m["laps"]:
+                click.echo(
+                    f"    {lap['lap']:<4} {lap['distance_km']:>5.1f}k "
+                    f"{lap['duration']:>8} {lap['speed_kmh']:>6.1f}km/h "
+                    f"{lap['avg_hr']:>3} {lap['ascent_m']:>4}m"
+                )
+        else:
+            click.echo(f"    {'#':<4} {'Dist':>6} {'Duree':>8} {'Allure':>8} {'FC':>4} {'D+':>5}")
+            for lap in m["laps"]:
+                click.echo(
+                    f"    {lap['lap']:<4} {lap['distance_km']:>5.1f}k "
+                    f"{lap['duration']:>8} {lap['pace']:>7}/km "
+                    f"{lap['avg_hr']:>3} {lap['ascent_m']:>4}m"
+                )
 
 
 def _print_week_summary(summary: dict, start_date: int):
