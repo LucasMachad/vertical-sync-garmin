@@ -235,6 +235,9 @@ def analyze_activity(fit_data: dict, filename: str) -> dict | None:
     session = fit_data["sessions"][0]
     records_df = pd.DataFrame(fit_data["records"])
 
+    sport = str(session.get("sport") or "unknown")
+    is_cycling = sport == "cycling"
+
     total_distance = session.get("total_distance", 0) or 0
     total_time = session.get("total_timer_time", 0) or 0
     total_ascent = session.get("total_ascent", 0) or 0
@@ -245,8 +248,9 @@ def analyze_activity(fit_data: dict, filename: str) -> dict | None:
     avg_speed = session.get("enhanced_avg_speed") or session.get("avg_speed", 0) or 0
     start_time = session.get("start_time")
 
-    # Coros stores cadence as half-cycles
-    if avg_cadence and avg_cadence < 100:
+    # Coros stores running cadence as half-cycles (spm/2). Cycling cadence is
+    # already in rpm and must not be doubled.
+    if avg_cadence and avg_cadence < 100 and not is_cycling:
         avg_cadence = avg_cadence * 2
 
     distance_km = total_distance / 1000
@@ -266,10 +270,11 @@ def analyze_activity(fit_data: dict, filename: str) -> dict | None:
     # Cardiac drift
     cardiac_drift = compute_cardiac_drift(records_df)
 
-    # GAP (Grade-Adjusted Pace)
+    # GAP (Grade-Adjusted Pace) — the Minetti cost model is calibrated for
+    # running economy and does not hold for cycling, so skip it on the bike.
     enriched = enrich_records(records_df)
     avg_gap_speed = None
-    if "gap_speed" in enriched.columns:
+    if not is_cycling and "gap_speed" in enriched.columns:
         valid_gap = enriched.loc[enriched["enhanced_speed"] > 0.5, "gap_speed"]
         if len(valid_gap) > 0:
             avg_gap_speed = float(valid_gap.mean())
@@ -299,6 +304,7 @@ def analyze_activity(fit_data: dict, filename: str) -> dict | None:
             "duration": format_duration(lap.get("total_timer_time", 0) or 0),
             "duration_s": lap.get("total_timer_time", 0) or 0,
             "pace": format_pace(lap_speed),
+            "speed_kmh": round(lap_speed * 3.6, 1) if lap_speed else 0.0,
             "avg_hr": lap.get("avg_heart_rate", 0) or 0,
             "max_hr": lap.get("max_heart_rate", 0) or 0,
             "cadence": lap_cadence,
@@ -310,12 +316,14 @@ def analyze_activity(fit_data: dict, filename: str) -> dict | None:
         "filename": filename,
         "date": date_str,
         "date_int": date_int,
+        "sport": sport,
         "distance_km": round(distance_km, 2),
         "duration": format_duration(total_time),
         "duration_s": total_time,
         "ascent_m": total_ascent,
         "descent_m": total_descent,
         "avg_pace": format_pace(avg_speed),
+        "avg_speed_kmh": round(avg_speed * 3.6, 1) if avg_speed else 0.0,
         "avg_gap": format_pace(avg_gap_speed) if avg_gap_speed else "N/A",
         "avg_gap_speed_ms": round(avg_gap_speed, 2) if avg_gap_speed else None,
         "avg_hr": avg_hr,

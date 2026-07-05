@@ -30,8 +30,8 @@ All analysis commands support `--json` for structured AI-readable output.
 | `vs week --start X --end Y [--json]` | Weekly analysis with summary + plan comparison |
 | `vs assess [--start X --end Y] [--json]` | Strengths/weaknesses assessment |
 | `vs plan [--week N] [--json]` | Training plan targets (read from `coach/plan/*.md`) |
-| `vs download --start X --end Y` | Download FIT files from Coros |
-| `vs login` | Test Coros connection |
+| `vs download --start X --end Y [--source coros\|garmin]` | Download FIT files from Coros or Garmin |
+| `vs login [--source coros\|garmin]` | Test Coros / Garmin connection |
 | `vs pdf` | Generate training plan PDF |
 
 ## Architecture
@@ -84,10 +84,13 @@ truth). Interpretation and prose → the LLM and the markdown bodies.
 
 ## Data Source
 
-Training data comes from **Coros Training Hub** (no official API - uses reverse-engineered endpoints).
+Training data comes from **Coros Training Hub** or **Garmin Connect**
+(`--source garmin`). Both use reverse-engineered endpoints — there is no
+official consumer API for either.
 
 Key libraries:
 - **coros_data_extractor** (Python) - structured activity data with pydantic models
+- **garminconnect** (Python) - Garmin Connect mobile API wrapper (tokens cached in `~/.garminconnect`)
 - **fitdecode** - .FIT file parsing
 - **click** - CLI framework
 
@@ -96,4 +99,5 @@ Key libraries:
 - Python 3.12+, uv
 - FIT file analysis (fitdecode + pandas)
 - Coros unofficial API (coros_data_extractor)
+- Garmin unofficial API (garminconnect)
 - CLI: click
