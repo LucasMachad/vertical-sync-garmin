@@ -50,6 +50,18 @@ def get_date_from_filename(filename: str) -> int:
     return int(filename[:8])
 
 
+# Activity-name markers for threshold / interval workouts. Garmin export
+# filenames embed the workout label (e.g. "..._Seuil_3x10min_..." or
+# "..._Frac_30x30_..."), so a footing is anything that carries none of these.
+QUALITY_KEYWORDS = ("seuil", "frac", "30x30", "45x45", "vma", "interval", "fartlek")
+
+
+def is_quality_session(filename: str) -> bool:
+    """True if the filename marks a threshold / interval (non-footing) session."""
+    name = filename.lower()
+    return any(k in name for k in QUALITY_KEYWORDS)
+
+
 def find_fit_files(start: int | None = None, end: int | None = None) -> list[Path]:
     """Find FIT files in data/fit/, optionally filtered by date range."""
     files = sorted(FIT_DIR.glob("*.fit"))
@@ -248,8 +260,8 @@ def analyze_activity(fit_data: dict, filename: str) -> dict | None:
     avg_speed = session.get("enhanced_avg_speed") or session.get("avg_speed", 0) or 0
     start_time = session.get("start_time")
 
-    # Coros stores running cadence as half-cycles (spm/2). Cycling cadence is
-    # already in rpm and must not be doubled.
+    # The FIT standard stores running cadence per leg (strides/min = spm/2), so
+    # double it to steps-per-minute. Cycling cadence is already in rpm — leave it.
     if avg_cadence and avg_cadence < 100 and not is_cycling:
         avg_cadence = avg_cadence * 2
 
@@ -284,6 +296,14 @@ def analyze_activity(fit_data: dict, filename: str) -> dict | None:
     ascent_rate = round(total_ascent / uphill_time_s * 3600) if uphill_time_s and total_ascent > 0 else 0
     vertical_ratio = round(total_ascent / distance_km) if distance_km > 0 else 0
     km_effort = round(distance_km + total_ascent / 100, 1)
+
+    # Efficiency factor: grade-adjusted distance covered per heartbeat (m/beat).
+    # Built on GAP so terrain doesn't distort the aerobic-efficiency signal —
+    # higher is more efficient. Running only (the Minetti GAP model isn't valid
+    # for cycling, so avg_gap_speed is None there and EF stays None).
+    efficiency_factor = None
+    if avg_gap_speed and avg_hr:
+        efficiency_factor = round(avg_gap_speed * 60 / avg_hr, 3)
 
     # Date from filename
     try:
@@ -326,6 +346,7 @@ def analyze_activity(fit_data: dict, filename: str) -> dict | None:
         "avg_speed_kmh": round(avg_speed * 3.6, 1) if avg_speed else 0.0,
         "avg_gap": format_pace(avg_gap_speed) if avg_gap_speed else "N/A",
         "avg_gap_speed_ms": round(avg_gap_speed, 2) if avg_gap_speed else None,
+        "efficiency_factor": efficiency_factor,
         "avg_hr": avg_hr,
         "max_hr": max_hr,
         "avg_cadence": avg_cadence,

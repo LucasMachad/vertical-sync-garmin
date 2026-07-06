@@ -46,6 +46,3 @@ name = "My Goal Race"
 date = "2026-06-20"           # YYYY-MM-DD
 distance_km = 50
 ascent_m = 3000
-
-[coros]
-trail_run_sport_type = 102    # Coros sportType id for trail running

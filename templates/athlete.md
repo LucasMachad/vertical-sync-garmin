@@ -11,7 +11,7 @@
 >   resolved injury, validated gear), not for day-to-day observations.
 
 **Home base:** <town / typical altitude / massif>
-**Profile:** <e.g. trail runner, Coros watch, mountain terrain>
+**Profile:** <e.g. trail runner, Garmin watch, mountain terrain>
 
 ---
 
