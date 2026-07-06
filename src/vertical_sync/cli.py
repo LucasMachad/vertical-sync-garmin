@@ -14,6 +14,7 @@ from .fit_parser import (
     enrich_records,
     find_fit_files,
     format_duration,
+    is_quality_session,
     parse_fit,
 )
 from .analysis import assess_activity, assess_week
@@ -89,74 +90,15 @@ def _garmin_client():
 
 
 @cli.command()
-@click.option("--source", type=click.Choice(["coros", "garmin"]), default="coros",
-              show_default=True, help="Data source")
-def login(source):
-    """Test the data source login (Coros Training Hub or Garmin Connect)."""
-    if source == "garmin":
-        client = _garmin_client()
-        click.echo(f"Login successful! Garmin user: {client.get_full_name()}")
-        return
-
-    import os
-
-    from dotenv import load_dotenv
-    from coros_data_extractor import CorosDataExtractor
-
-    load_dotenv()
-    ext = CorosDataExtractor()
-    ext.login(os.environ["COROS_EMAIL"], os.environ["COROS_PASSWORD"])
-    click.echo(f"Login successful! User ID: {ext.user_id}")
+def login():
+    """Test the Garmin Connect login."""
+    client = _garmin_client()
+    click.echo(f"Login successful! Garmin user: {client.get_full_name()}")
 
 
 # ---------------------------------------------------------------------------
 # download
 # ---------------------------------------------------------------------------
-
-def _download_coros(start_d: int, end_d: int, as_json: bool) -> list[str]:
-    """Download all activity FITs from Coros Training Hub. Returns filenames."""
-    import os
-
-    import requests
-    from dotenv import load_dotenv
-    from coros_data_extractor import CorosDataExtractor
-    from coros_data_extractor.data.api_model import ActivityFileType
-    from coros_data_extractor.data.constants import ACTIVITY_DOWNLOAD_URL
-
-    load_dotenv()
-    ext = CorosDataExtractor()
-    ext.login(os.environ["COROS_EMAIL"], os.environ["COROS_PASSWORD"])
-
-    activities = ext.get_activities(limit=50)
-    week_runs = [a for a in activities if start_d <= a["date"] <= end_d]
-
-    headers = {"Accesstoken": ext.access_token}
-    downloaded = []
-
-    for a in week_runs:
-        payload = {
-            "labelId": a["labelId"],
-            "fileType": ActivityFileType.FIT.value,
-            "sportType": a["sportType"],
-        }
-        resp = requests.post(ACTIVITY_DOWNLOAD_URL, headers=headers, data=payload)
-        resp.raise_for_status()
-        resp_json = resp.json()
-
-        if "data" not in resp_json:
-            if not as_json:
-                click.echo(f"[SKIP] No FIT for {a['name']}", err=True)
-            continue
-
-        fit_resp = requests.get(resp_json["data"]["fileUrl"])
-        filename = f"{a['date']}_{safe_filename_part(a['name'])}_{a['labelId']}.fit"
-        (FIT_DIR / filename).write_bytes(fit_resp.content)
-        downloaded.append(filename)
-        if not as_json:
-            click.echo(f"[OK] {filename}")
-
-    return downloaded
-
 
 def _download_garmin(start_d: int, end_d: int, as_json: bool) -> list[str]:
     """Download all activity FITs from Garmin Connect. Returns filenames."""
@@ -197,16 +139,13 @@ def _download_garmin(start_d: int, end_d: int, as_json: bool) -> list[str]:
 @cli.command()
 @click.option("--start", required=True, help="Start date (YYYYMMDD or YYYY-MM-DD)")
 @click.option("--end", required=True, help="End date (YYYYMMDD or YYYY-MM-DD)")
-@click.option("--source", type=click.Choice(["coros", "garmin"]), default="coros",
-              show_default=True, help="Data source")
 @click.option("--json", "as_json", is_flag=True, help="JSON output")
-def download(start, end, source, as_json):
-    """Download all activity FIT files for a date range (Coros or Garmin)."""
+def download(start, end, as_json):
+    """Download all activity FIT files for a date range from Garmin Connect."""
     start_d, end_d = parse_date(start), parse_date(end)
     FIT_DIR.mkdir(parents=True, exist_ok=True)
 
-    fetch = _download_garmin if source == "garmin" else _download_coros
-    downloaded = fetch(start_d, end_d, as_json)
+    downloaded = _download_garmin(start_d, end_d, as_json)
 
     if as_json:
         click.echo(json.dumps({"downloaded": downloaded, "count": len(downloaded)}))
@@ -462,6 +401,104 @@ def profile(target, as_json):
 
 
 # ---------------------------------------------------------------------------
+# efficiency (GAP/HR trend over easy footing runs)
+# ---------------------------------------------------------------------------
+
+@cli.command()
+@click.option("--start", default=None, help="Start date (YYYYMMDD or YYYY-MM-DD)")
+@click.option("--end", default=None, help="End date (YYYYMMDD or YYYY-MM-DD)")
+@click.option("--min-km", type=float, default=10.0, show_default=True, help="Min distance (km)")
+@click.option("--max-km", type=float, default=20.0, show_default=True, help="Max distance (km)")
+@click.option("--json", "as_json", is_flag=True, help="JSON output")
+def efficiency(start, end, min_km, max_km, as_json):
+    """Efficiency factor (GAP/HR) trend over easy footing runs.
+
+    Keeps only running activities in the [min-km, max-km] range and drops
+    threshold / interval sessions, so the trend reflects aerobic efficiency
+    on comparable footings rather than workout intensity.
+    """
+    from collections import defaultdict
+
+    s = parse_date(start) if start else None
+    e = parse_date(end) if end else None
+    files = find_fit_files(s, e)
+    if not files:
+        click.echo("No FIT files found.", err=True)
+        sys.exit(1)
+
+    runs, excluded = [], 0
+    for f in files:
+        if is_quality_session(f.name):
+            excluded += 1
+            continue
+        data = parse_fit(f)
+        m = analyze_activity(data, f.name)
+        if not m or m["sport"] != "running":
+            continue
+        if not (min_km <= m["distance_km"] <= max_km):
+            continue
+        if m.get("efficiency_factor") is None:
+            continue
+        runs.append({
+            "date": m["date"],
+            "efficiency_factor": m["efficiency_factor"],
+            "distance_km": m["distance_km"],
+            "avg_hr": m["avg_hr"],
+            "avg_gap": m["avg_gap"],
+            "filename": m["filename"],
+        })
+
+    runs.sort(key=lambda r: r["date"])
+
+    buckets = defaultdict(list)
+    for r in runs:
+        buckets[r["date"][:7]].append(r["efficiency_factor"])
+    monthly = [
+        {"month": mo, "runs": len(v), "avg_ef": round(sum(v) / len(v), 3)}
+        for mo, v in sorted(buckets.items())
+    ]
+
+    summary = {}
+    if monthly:
+        first, last = monthly[0], monthly[-1]
+        summary = {
+            "runs": len(runs),
+            "excluded_quality": excluded,
+            "first_month": first["month"],
+            "first_avg_ef": first["avg_ef"],
+            "last_month": last["month"],
+            "last_avg_ef": last["avg_ef"],
+            "change_pct": round((last["avg_ef"] - first["avg_ef"]) / first["avg_ef"] * 100, 1)
+            if first["avg_ef"] else 0,
+        }
+
+    if as_json:
+        click.echo(json.dumps(
+            {"runs": runs, "monthly": monthly, "summary": summary}, default=str, indent=2))
+        return
+
+    if not runs:
+        click.echo("No footing runs matched the filters.", err=True)
+        sys.exit(1)
+
+    click.echo(f"\n  EFFICIENCY FACTOR (GAP/FC) — footings {min_km:.0f}-{max_km:.0f} km")
+    click.echo(f"  {len(runs)} sortie(s) retenue(s), {excluded} seance(s) seuil/fractionne exclue(s)")
+    click.echo(f"  {'-' * 52}")
+    click.echo(f"  {'Mois':<9} {'EF moy':>7} {'Sorties':>9}")
+    for mo in monthly:
+        click.echo(f"  {mo['month']:<9} {mo['avg_ef']:>7.3f} {mo['runs']:>9}")
+
+    if summary:
+        arrow = "+" if summary["change_pct"] >= 0 else ""
+        click.echo(f"  {'-' * 52}")
+        click.echo(
+            f"  Tendance: {summary['first_avg_ef']:.3f} ({summary['first_month']}) "
+            f"-> {summary['last_avg_ef']:.3f} ({summary['last_month']}) "
+            f"[{arrow}{summary['change_pct']:.1f}%]"
+        )
+
+
+# ---------------------------------------------------------------------------
 # plan
 # ---------------------------------------------------------------------------
 
@@ -592,6 +629,8 @@ def _print_activity(m: dict):
         click.echo(f"  Allure moy:    {m['avg_pace']} /km")
         if m.get("avg_gap") and m["avg_gap"] != "N/A":
             click.echo(f"  GAP:           {m['avg_gap']} /km")
+        if m.get("efficiency_factor") is not None:
+            click.echo(f"  Eff. factor:   {m['efficiency_factor']} m/battement (GAP/FC)")
     click.echo(f"  FC moy:        {m['avg_hr']} bpm")
     click.echo(f"  FC max:        {m['max_hr']} bpm")
     click.echo(f"  Cadence:       {m['avg_cadence']} {'rpm' if is_cycling else 'spm'}")

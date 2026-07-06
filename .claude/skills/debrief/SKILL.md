@@ -25,7 +25,7 @@ Read `docs/coach-memory.md` if you need the full schema.
    - If files are missing, the user may need `vs download --start X --end Y` first.
 
 3. **Interpret.** Compare actuals vs the plan week's targets (hours, D+, sessions),
-   factor the athlete profile (e.g. poles → Coros cadence underestimated; HR drift
+   factor the athlete profile (e.g. poles → running cadence underestimated; HR drift
    is a strength; watch the known injuries). Say what it means, not just the numbers.
 
 4. **Write the journal entry.** Prepend a dated entry to the top of
