@@ -407,7 +407,7 @@ def profile(target, as_json):
 @cli.command()
 @click.option("--start", default=None, help="Start date (YYYYMMDD or YYYY-MM-DD)")
 @click.option("--end", default=None, help="End date (YYYYMMDD or YYYY-MM-DD)")
-@click.option("--min-km", type=float, default=10.0, show_default=True, help="Min distance (km)")
+@click.option("--min-km", type=float, default=6.0, show_default=True, help="Min distance (km)")
 @click.option("--max-km", type=float, default=20.0, show_default=True, help="Max distance (km)")
 @click.option("--json", "as_json", is_flag=True, help="JSON output")
 def efficiency(start, end, min_km, max_km, as_json):
