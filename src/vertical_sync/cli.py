@@ -428,14 +428,14 @@ def efficiency(start, end, min_km, max_km, as_json):
 
     runs, excluded = [], 0
     for f in files:
-        if is_quality_session(f.name):
-            excluded += 1
-            continue
         data = parse_fit(f)
         m = analyze_activity(data, f.name)
         if not m or m["sport"] != "running":
             continue
         if not (min_km <= m["distance_km"] <= max_km):
+            continue
+        if is_quality_session(m):
+            excluded += 1
             continue
         if m.get("efficiency_factor") is None:
             continue

@@ -50,16 +50,22 @@ def get_date_from_filename(filename: str) -> int:
     return int(filename[:8])
 
 
-# Activity-name markers for threshold / interval workouts. Garmin export
-# filenames embed the workout label (e.g. "..._Seuil_3x10min_..." or
-# "..._Frac_30x30_..."), so a footing is anything that carries none of these.
-QUALITY_KEYWORDS = ("seuil", "frac", "30x30", "45x45", "vma", "interval", "fartlek")
+# A footing keeps almost all of its time in the aerobic zones; threshold and
+# interval sessions pile up time in Z4-Z5, and that intensity distorts the
+# GAP/HR efficiency signal, so we drop them from the trend. We classify by what
+# the run *actually was* (measured zone distribution), not by its Garmin name:
+# names are unreliable in both directions — an easy footing can carry a workout
+# label (e.g. reps run at footing pace, filename "..._30x30_...") and a hard
+# threshold test can have a generic name ("..._Course_a_pied_...").
+QUALITY_HI_ZONE_PCT = 25.0  # Z4+Z5 share (%) at/above which a run counts as quality
 
 
-def is_quality_session(filename: str) -> bool:
-    """True if the filename marks a threshold / interval (non-footing) session."""
-    name = filename.lower()
-    return any(k in name for k in QUALITY_KEYWORDS)
+def is_quality_session(metrics: dict) -> bool:
+    """True if a run's measured intensity marks it as a threshold / interval
+    session rather than an easy footing (time in Z4-Z5 >= QUALITY_HI_ZONE_PCT)."""
+    zones = metrics.get("hr_zones") or {}
+    hi_pct = sum(zones.get(z, {}).get("pct", 0.0) for z in ("Z4", "Z5"))
+    return hi_pct >= QUALITY_HI_ZONE_PCT
 
 
 def find_fit_files(start: int | None = None, end: int | None = None) -> list[Path]:
