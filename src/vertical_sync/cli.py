@@ -647,39 +647,7 @@ def plan(week_num, as_json):
 # pdf
 # ---------------------------------------------------------------------------
 
-@cli.command()
-def pdf():
-    """Generate training plan PDF from the coach/plan/*.md files."""
-    import subprocess
-    import tempfile
-
-    import weasyprint
-
-    from .config import COACH_DIR, load_plan_markdown
-
-    markdown = load_plan_markdown()
-    if not markdown.strip():
-        click.echo("No plan to render. Add weekly files under coach/plan/.", err=True)
-        sys.exit(1)
-
-    COACH_DIR.mkdir(parents=True, exist_ok=True)
-    pdf_path = COACH_DIR / "plan.pdf"
-
-    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8") as tmp:
-        tmp.write(markdown)
-        md_path = tmp.name
-
-    result = subprocess.run(
-        ["pandoc", md_path, "-t", "html", "--standalone"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        click.echo(f"pandoc error: {result.stderr}", err=True)
-        sys.exit(1)
-
-    css = """
-    <style>
+_PLAN_CSS = """
       @page { size: A4 portrait; margin: 1cm; }
       body { font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
              font-size: 9.5pt; line-height: 1.4; color: #1a1a1a; }
@@ -694,11 +662,97 @@ def pdf():
                    background-color: #f0f7ee; font-style: italic; font-size: 8.5pt; }
       blockquote p { margin: 0; }
       strong { color: #2d5a27; }
-    </style>
-    """
-    styled_html = result.stdout.replace("</head>", css + "</head>")
-    weasyprint.HTML(string=styled_html).write_pdf(str(pdf_path))
+"""
+
+
+def _find_chromium() -> str | None:
+    """Locate a Chromium-family browser to render HTML -> PDF (no GTK needed).
+
+    Prefers one on PATH, then common Windows/macOS install locations. Returns
+    None if none is found — the caller then leaves the HTML for manual Ctrl+P."""
+    import shutil
+
+    for name in ("msedge", "chrome", "google-chrome", "chromium",
+                 "chromium-browser", "brave"):
+        found = shutil.which(name)
+        if found:
+            return found
+    candidates = [
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    ]
+    for path in candidates:
+        if Path(path).exists():
+            return path
+    return None
+
+
+@cli.command()
+def pdf():
+    """Generate the training plan as HTML + PDF from the coach/plan/*.md files.
+
+    Markdown -> styled HTML (pure Python), then HTML -> PDF via a headless
+    Chromium browser (Edge/Chrome) that Windows/macOS already ship — no pandoc,
+    no WeasyPrint/GTK. If no browser is found the HTML is still written; open it
+    and use Ctrl+P -> Save as PDF (A4)."""
+    import subprocess
+    import tempfile
+
+    import markdown as md_lib
+
+    from .config import COACH_DIR, load_plan_markdown
+
+    plan_md = load_plan_markdown()
+    if not plan_md.strip():
+        click.echo("No plan to render. Add weekly files under coach/plan/.", err=True)
+        sys.exit(1)
+
+    COACH_DIR.mkdir(parents=True, exist_ok=True)
+    body = md_lib.markdown(plan_md, extensions=["tables", "fenced_code", "sane_lists"])
+    styled_html = (
+        '<!doctype html>\n<html lang="fr"><head><meta charset="utf-8">\n'
+        "<title>Plan</title>\n<style>" + _PLAN_CSS + "</style>\n</head><body>\n"
+        + body + "\n</body></html>\n"
+    )
+
+    html_path = COACH_DIR / "plan.html"
+    html_path.write_text(styled_html, encoding="utf-8")
+
+    pdf_path = COACH_DIR / "plan.pdf"
+    browser = _find_chromium()
+    if not browser:
+        click.echo(f"HTML generated: {html_path}")
+        click.echo(
+            "No Chromium browser found for automatic PDF rendering. "
+            "Open the HTML and use Ctrl+P -> Save as PDF (A4).",
+            err=True,
+        )
+        return
+
+    with tempfile.TemporaryDirectory() as tmp:
+        result = subprocess.run(
+            [
+                browser, "--headless=new", "--disable-gpu",
+                "--no-pdf-header-footer", f"--user-data-dir={tmp}",
+                f"--print-to-pdf={pdf_path}", html_path.as_uri(),
+            ],
+            capture_output=True, text=True,
+        )
+    if result.returncode != 0 or not pdf_path.exists():
+        click.echo(f"HTML generated: {html_path}")
+        click.echo(
+            f"Automatic PDF rendering failed (exit {result.returncode}). "
+            "Open the HTML and use Ctrl+P -> Save as PDF (A4).",
+            err=True,
+        )
+        return
+
     click.echo(f"PDF generated: {pdf_path}")
+    click.echo(f"HTML also written: {html_path}")
 
 
 # ---------------------------------------------------------------------------
