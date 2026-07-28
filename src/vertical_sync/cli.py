@@ -154,6 +154,100 @@ def download(start, end, as_json):
 
 
 # ---------------------------------------------------------------------------
+# recovery (resting HR + overnight HRV from Garmin wellness data)
+# ---------------------------------------------------------------------------
+
+def _rhr_value(client, day: str) -> int | None:
+    """Daily resting heart rate (bpm) for an ISO date, or None if unavailable."""
+    try:
+        data = client.get_rhr_day(day) or {}
+        arr = (data.get("allMetrics", {}).get("metricsMap", {})
+               .get("WELLNESS_RESTING_HEART_RATE", []))
+        val = arr[0].get("value") if arr else None
+        return int(val) if val is not None else None
+    except Exception:
+        return None
+
+
+def _hrv_value(client, day: str) -> tuple[int | None, str | None]:
+    """Overnight HRV avg (ms) + Garmin status for an ISO date. HRV exists only
+    on nights the watch was worn, so both may be None."""
+    try:
+        summary = (client.get_hrv_data(day) or {}).get("hrvSummary") or {}
+        avg = summary.get("lastNightAvg")
+        return (int(avg) if avg is not None else None), summary.get("status")
+    except Exception:
+        return None, None
+
+
+@cli.command()
+@click.option("--start", default=None, help="Start date (YYYYMMDD or YYYY-MM-DD)")
+@click.option("--end", default=None, help="End date (YYYYMMDD or YYYY-MM-DD)")
+@click.option("--json", "as_json", is_flag=True, help="JSON output")
+def recovery(start, end, as_json):
+    """Resting HR + overnight HRV history from Garmin Connect (default: last 14 days).
+
+    RHR is recorded daily; HRV only on nights the watch was worn. Both are *raw*
+    signals: interpret them against lifestyle confounds — a late night or alcohol
+    inflates RHR and suppresses HRV independently of training load, so an isolated
+    spike is not necessarily accumulated fatigue.
+    """
+    from datetime import date, datetime, timedelta
+
+    end_d = (datetime.strptime(str(parse_date(end)), "%Y%m%d").date()
+             if end else date.today())
+    start_d = (datetime.strptime(str(parse_date(start)), "%Y%m%d").date()
+               if start else end_d - timedelta(days=13))
+    if start_d > end_d:
+        click.echo("start must be on or before end.", err=True)
+        sys.exit(1)
+
+    client = _garmin_client()
+
+    days = []
+    d = start_d
+    while d <= end_d:
+        ds = d.isoformat()
+        rhr = _rhr_value(client, ds)
+        hrv, status = _hrv_value(client, ds)
+        days.append({"date": ds, "rhr": rhr, "hrv": hrv, "hrv_status": status})
+        d += timedelta(days=1)
+
+    rhrs = sorted(x["rhr"] for x in days if x["rhr"] is not None)
+    summary = {}
+    if rhrs:
+        n = len(rhrs)
+        median = rhrs[n // 2] if n % 2 else (rhrs[n // 2 - 1] + rhrs[n // 2]) / 2
+        summary = {
+            "rhr_min": rhrs[0],
+            "rhr_median": median,
+            "rhr_max": rhrs[-1],
+            "days_with_rhr": n,
+            "days_with_hrv": sum(1 for x in days if x["hrv"] is not None),
+        }
+
+    if as_json:
+        click.echo(json.dumps({"days": days, "summary": summary}, default=str, indent=2))
+        return
+
+    click.echo("\n  RECUPERATION - RHR (quotidien) + VFC (nuits montre)")
+    click.echo(f"  {start_d.isoformat()} -> {end_d.isoformat()}")
+    click.echo(f"  {'-' * 40}")
+    click.echo(f"  {'Date':<12} {'RHR':>4} {'VFC':>5} {'Statut':<10}")
+    for x in days:
+        rhr = str(x["rhr"]) if x["rhr"] is not None else "-"
+        hrv = str(x["hrv"]) if x["hrv"] is not None else "-"
+        click.echo(f"  {x['date']:<12} {rhr:>4} {hrv:>5} {(x['hrv_status'] or ''):<10}")
+    if summary:
+        click.echo(f"  {'-' * 40}")
+        click.echo(
+            f"  RHR min {summary['rhr_min']} / median {summary['rhr_median']} / "
+            f"max {summary['rhr_max']}  ({summary['days_with_rhr']}j RHR, "
+            f"{summary['days_with_hrv']}j VFC)"
+        )
+
+
+# ---------------------------------------------------------------------------
 # list
 # ---------------------------------------------------------------------------
 

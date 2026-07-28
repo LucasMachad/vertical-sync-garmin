@@ -22,11 +22,18 @@ Read `docs/coach-memory.md` if you need the full schema.
      summary **and** the comparison to the plan week's targets.
    - Strengths/weaknesses flags: `vs assess --json`. Treat `analysis.py`
      observations (strength/weakness/info) as **inputs to interpret**, not verdicts.
+   - Recovery: `vs recovery --json` (resting HR daily + overnight HRV). Pulls
+     live from Garmin — RHR every day, HRV only on nights the watch was worn.
    - If files are missing, the user may need `vs download --start X --end Y` first.
 
 3. **Interpret.** Compare actuals vs the plan week's targets (hours, D+, sessions),
    factor the athlete profile (e.g. poles → running cadence underestimated; HR drift
    is a strength; watch the known injuries). Say what it means, not just the numbers.
+   - **RHR/HRV: read the trend, not single mornings, and always check for a
+     lifestyle confound before calling an elevated RHR / low HRV "fatigue."** A
+     late night or alcohol inflates RHR and suppresses HRV independently of
+     training (see `coach/athlete.md` "Recovery markers"). Ask the user about an
+     isolated spike rather than assuming overload.
 
 4. **Write the journal entry.** Prepend a dated entry to the top of
    `coach/journal/YYYY-<race>.md` (template: `templates/journal-entry.md`):
