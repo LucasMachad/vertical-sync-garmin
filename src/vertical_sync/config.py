@@ -88,6 +88,19 @@ def get_plan_week(date: int) -> dict | None:
     return None
 
 
+def load_plan_week(week_num: int) -> tuple[dict, str] | None:
+    """Return ``(frontmatter, markdown body)`` for one plan week, or None.
+
+    Used to render a single week's sheet (targets + session table) rather than
+    the whole block.
+    """
+    for p in _plan_files_sorted():
+        meta, body = parse_frontmatter(p.read_text(encoding="utf-8"))
+        if meta.get("week") == week_num:
+            return meta, body
+    return None
+
+
 def load_plan_markdown() -> str:
     """Concatenate the plan into a single markdown document (for PDF export).
 
