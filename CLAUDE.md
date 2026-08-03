@@ -34,7 +34,7 @@ All analysis commands support `--json` for structured AI-readable output.
 | `vs recovery [--start X --end Y] [--json]` | Resting HR (daily) + overnight HRV history from Garmin (default: last 14 days) |
 | `vs download --start X --end Y` | Download FIT files from Garmin Connect |
 | `vs login` | Test Garmin Connect connection |
-| `vs pdf` | Generate training plan PDF |
+| `vs pdf [--week N]` | Generate training plan PDF (full block, or a one-page sheet for week N) |
 
 ## Architecture
 

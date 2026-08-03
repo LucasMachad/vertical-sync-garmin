@@ -49,6 +49,20 @@ def _race_label() -> str:
     return " — ".join(parts) if parts else "no race configured"
 
 
+def _race_label_short() -> str:
+    """Compact race goal for sheet headers, e.g. 'Grand Trail des Templiers · 18 octobre 2026'."""
+    name = RACE.get("name", "")
+    date_str = RACE.get("date")
+    if date_str:
+        try:
+            y, m, d = (int(x) for x in str(date_str).split("-"))
+            date_fr = f"{d} {_FR_MONTHS[m - 1]} {y}"
+            return f"{name} · {date_fr}" if name else date_fr
+        except (ValueError, IndexError):
+            pass
+    return name or "no race configured"
+
+
 # ---------------------------------------------------------------------------
 # CLI root
 # ---------------------------------------------------------------------------
@@ -665,6 +679,108 @@ _PLAN_CSS = """
 """
 
 
+_WEEK_CSS = """
+      @page { size: A4 portrait; margin: 1.4cm; }
+      body { font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
+             font-size: 10.5pt; line-height: 1.5; color: #1a1a1a; margin: 0; }
+      .badge { display: inline-block; font-size: 8.5pt; font-weight: 600; color: #2d5a27;
+               border: 1px solid #ccd9c8; border-radius: 5px; padding: 2px 8px; vertical-align: middle; }
+      h1 { display: inline; font-size: 17pt; color: #2d5a27; margin: 0 0 0 8px; }
+      .dates { color: #6b6b6b; font-size: 9.5pt; margin: 6px 0 16px; }
+      .metrics { display: flex; gap: 10px; margin-bottom: 18px; }
+      .tile { flex: 1; background: #f0f7ee; border-radius: 8px; padding: 10px 14px; }
+      .tile .lbl { font-size: 8.5pt; color: #567150; text-transform: uppercase; letter-spacing: .04em; }
+      .tile .val { font-size: 17pt; font-weight: 600; color: #2d5a27; margin-top: 2px; }
+      table { width: 100%; border-collapse: collapse; font-size: 9.5pt; page-break-inside: avoid; }
+      th { background-color: #2d5a27; color: white; padding: 5px 8px; text-align: left; }
+      td { padding: 5px 8px; border-bottom: 1px solid #ddd; }
+      tr:nth-child(even) td { background-color: #f5f5f5; }
+      h3 { font-size: 11pt; color: #2d5a27; margin: 18px 0 6px; }
+      blockquote { padding: 6px 12px; border-left: 3px solid #2d5a27;
+                   background-color: #f0f7ee; font-style: italic; font-size: 9pt; margin: 12px 0; }
+      blockquote p { margin: 0; }
+      ul { margin: 6px 0; padding-left: 20px; }
+      li { margin: 3px 0; }
+      strong { color: #2d5a27; }
+"""
+
+_FR_MONTHS = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet",
+              "août", "septembre", "octobre", "novembre", "décembre"]
+
+
+def _fmt_fr_date_range(start: int, end: int) -> str:
+    """Format two YYYYMMDD ints as a French date range, e.g. '3–9 août 2026'."""
+    from datetime import date
+
+    s = date(start // 10000, (start // 100) % 100, start % 100)
+    e = date(end // 10000, (end // 100) % 100, end % 100)
+    if s.month == e.month and s.year == e.year:
+        return f"{s.day}–{e.day} {_FR_MONTHS[e.month - 1]} {e.year}"
+    if s.year == e.year:
+        return (f"{s.day} {_FR_MONTHS[s.month - 1]} – "
+                f"{e.day} {_FR_MONTHS[e.month - 1]} {e.year}")
+    return (f"{s.day} {_FR_MONTHS[s.month - 1]} {s.year} – "
+            f"{e.day} {_FR_MONTHS[e.month - 1]} {e.year}")
+
+
+def _render_week_html(meta: dict, body_md: str) -> str:
+    """Build a styled single-week sheet: targets banner + the week's markdown body."""
+    import re
+
+    import markdown as md_lib
+
+    lines = body_md.splitlines()
+    if lines and lines[0].lstrip().startswith("## "):
+        title = lines[0].lstrip()[3:].strip()
+        body_md = "\n".join(lines[1:]).strip()
+    else:
+        title = f"Semaine {meta.get('week', '')}"
+    title = re.sub(r"^Semaine\s+\d+\s*[—–-]\s*", "", title).strip() or meta.get("phase", "")
+
+    hours = f"{meta.get('target_hours', 0):g}".replace(".", ",")
+    tiles = (
+        f'<div class="tile"><div class="lbl">Durée</div><div class="val">{hours} h</div></div>'
+        f'<div class="tile"><div class="lbl">Dénivelé</div><div class="val">{meta.get("target_dplus", 0)} m</div></div>'
+        f'<div class="tile"><div class="lbl">Séances</div><div class="val">{meta.get("target_sessions", 0)}</div></div>'
+    )
+    header = (
+        f'<div><span class="badge">Semaine {meta.get("week", "")}</span>'
+        f"<h1>{title}</h1></div>\n"
+        f'<div class="dates">{_fmt_fr_date_range(meta["start"], meta["end"])} · '
+        f"{_race_label_short()}</div>\n"
+        f'<div class="metrics">{tiles}</div>\n'
+    )
+    body_html = md_lib.markdown(body_md, extensions=["tables", "fenced_code", "sane_lists"])
+    return (
+        '<!doctype html>\n<html lang="fr"><head><meta charset="utf-8">\n'
+        f"<title>Semaine {meta.get('week', '')}</title>\n<style>" + _WEEK_CSS + "</style>\n"
+        "</head><body>\n" + header + body_html + "\n</body></html>\n"
+    )
+
+
+def _html_to_pdf(html_path: Path, pdf_path: Path) -> int | None:
+    """Render an HTML file to PDF via headless Chromium.
+
+    Returns the subprocess exit code, or None if no browser was found. The PDF
+    is written only on success (exit 0)."""
+    import subprocess
+    import tempfile
+
+    browser = _find_chromium()
+    if not browser:
+        return None
+    with tempfile.TemporaryDirectory() as tmp:
+        result = subprocess.run(
+            [
+                browser, "--headless=new", "--disable-gpu",
+                "--no-pdf-header-footer", f"--user-data-dir={tmp}",
+                f"--print-to-pdf={pdf_path}", html_path.as_uri(),
+            ],
+            capture_output=True, text=True,
+        )
+    return result.returncode
+
+
 def _find_chromium() -> str | None:
     """Locate a Chromium-family browser to render HTML -> PDF (no GTK needed).
 
@@ -692,63 +808,62 @@ def _find_chromium() -> str | None:
 
 
 @cli.command()
-def pdf():
+@click.option("--week", "week_num", type=int, default=None,
+              help="Render a single week's sheet instead of the full block")
+def pdf(week_num):
     """Generate the training plan as HTML + PDF from the coach/plan/*.md files.
+
+    Without --week, renders the whole block (README + every week). With --week N,
+    renders a one-page sheet for that week: a targets banner (hours / D+ / sessions)
+    plus the week's session table and notes.
 
     Markdown -> styled HTML (pure Python), then HTML -> PDF via a headless
     Chromium browser (Edge/Chrome) that Windows/macOS already ship — no pandoc,
     no WeasyPrint/GTK. If no browser is found the HTML is still written; open it
     and use Ctrl+P -> Save as PDF (A4)."""
-    import subprocess
-    import tempfile
-
     import markdown as md_lib
 
-    from .config import COACH_DIR, load_plan_markdown
+    from .config import COACH_DIR, load_plan_markdown, load_plan_week
 
-    plan_md = load_plan_markdown()
-    if not plan_md.strip():
-        click.echo("No plan to render. Add weekly files under coach/plan/.", err=True)
-        sys.exit(1)
+    if week_num is not None:
+        loaded = load_plan_week(week_num)
+        if loaded is None:
+            click.echo(f"No week {week_num} in plan.", err=True)
+            sys.exit(1)
+        meta, body = loaded
+        styled_html = _render_week_html(meta, body)
+        stem = f"plan-week{week_num}"
+    else:
+        plan_md = load_plan_markdown()
+        if not plan_md.strip():
+            click.echo("No plan to render. Add weekly files under coach/plan/.", err=True)
+            sys.exit(1)
+        body = md_lib.markdown(plan_md, extensions=["tables", "fenced_code", "sane_lists"])
+        styled_html = (
+            '<!doctype html>\n<html lang="fr"><head><meta charset="utf-8">\n'
+            "<title>Plan</title>\n<style>" + _PLAN_CSS + "</style>\n</head><body>\n"
+            + body + "\n</body></html>\n"
+        )
+        stem = "plan"
 
     COACH_DIR.mkdir(parents=True, exist_ok=True)
-    body = md_lib.markdown(plan_md, extensions=["tables", "fenced_code", "sane_lists"])
-    styled_html = (
-        '<!doctype html>\n<html lang="fr"><head><meta charset="utf-8">\n'
-        "<title>Plan</title>\n<style>" + _PLAN_CSS + "</style>\n</head><body>\n"
-        + body + "\n</body></html>\n"
-    )
-
-    html_path = COACH_DIR / "plan.html"
+    html_path = COACH_DIR / f"{stem}.html"
     html_path.write_text(styled_html, encoding="utf-8")
+    pdf_path = COACH_DIR / f"{stem}.pdf"
 
-    pdf_path = COACH_DIR / "plan.pdf"
-    browser = _find_chromium()
-    if not browser:
+    manual_hint = (
+        "Open the HTML and use Ctrl+P -> Save as PDF (A4)."
+    )
+    code = _html_to_pdf(html_path, pdf_path)
+    if code is None:
         click.echo(f"HTML generated: {html_path}")
-        click.echo(
-            "No Chromium browser found for automatic PDF rendering. "
-            "Open the HTML and use Ctrl+P -> Save as PDF (A4).",
-            err=True,
-        )
+        click.echo("No Chromium browser found for automatic PDF rendering. "
+                   + manual_hint, err=True)
         return
-
-    with tempfile.TemporaryDirectory() as tmp:
-        result = subprocess.run(
-            [
-                browser, "--headless=new", "--disable-gpu",
-                "--no-pdf-header-footer", f"--user-data-dir={tmp}",
-                f"--print-to-pdf={pdf_path}", html_path.as_uri(),
-            ],
-            capture_output=True, text=True,
-        )
-    if result.returncode != 0 or not pdf_path.exists():
+    if code != 0 or not pdf_path.exists():
         click.echo(f"HTML generated: {html_path}")
-        click.echo(
-            f"Automatic PDF rendering failed (exit {result.returncode}). "
-            "Open the HTML and use Ctrl+P -> Save as PDF (A4).",
-            err=True,
-        )
+        click.echo(f"Automatic PDF rendering failed (exit {code}). " + manual_hint,
+                   err=True)
         return
 
     click.echo(f"PDF generated: {pdf_path}")
