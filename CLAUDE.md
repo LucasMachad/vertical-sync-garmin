@@ -32,6 +32,7 @@ All analysis commands support `--json` for structured AI-readable output.
 | `vs efficiency [--start X --end Y] [--json]` | Efficiency factor (GAP/HR) trend over easy footing runs (quality sessions excluded by measured Z4-Z5 intensity) |
 | `vs plan [--week N] [--json]` | Training plan targets (read from `coach/plan/*.md`) |
 | `vs recovery [--start X --end Y] [--json]` | Resting HR (daily) + overnight HRV history from Garmin (default: last 14 days) |
+| `vs weight [--start X --end Y] [--weekly] [--json]` | Weight + body composition (body fat %, muscle %, lean mass) from a Renpho smart scale (default: last 90 days; `--weekly` = mean per ISO week to smooth daily noise) |
 | `vs download --start X --end Y` | Download FIT files from Garmin Connect |
 | `vs login` | Test Garmin Connect connection |
 | `vs pdf` | Generate training plan PDF |
@@ -91,6 +92,7 @@ endpoints — there is no official consumer API.
 
 Key libraries:
 - **garminconnect** (Python) - Garmin Connect mobile API wrapper (tokens cached in `~/.garminconnect`)
+- **renpho-api** (Python) - unofficial Renpho smart-scale cloud API wrapper (weight + body composition; creds in `.env`, powers `vs weight`)
 - **fitdecode** - .FIT file parsing
 - **click** - CLI framework
 

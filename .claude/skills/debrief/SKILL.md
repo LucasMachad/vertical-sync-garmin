@@ -24,6 +24,10 @@ Read `docs/coach-memory.md` if you need the full schema.
      observations (strength/weakness/info) as **inputs to interpret**, not verdicts.
    - Recovery: `vs recovery --json` (resting HR daily + overnight HRV). Pulls
      live from Garmin — RHR every day, HRV only on nights the watch was worn.
+   - Weight: `vs weight --weekly --json` (weight + body composition from Renpho,
+     weekly means). Read the **weekly trend**, not a single day (daily fluctuates
+     ±1 kg with water/glycogen). Sparse if the user didn't weigh — ask for the
+     value if missing. If empty, the user may not have synced the Renpho app.
    - If files are missing, the user may need `vs download --start X --end Y` first.
 
 3. **Interpret.** Compare actuals vs the plan week's targets (hours, D+, sessions),
@@ -34,6 +38,12 @@ Read `docs/coach-memory.md` if you need the full schema.
      late night or alcohol inflates RHR and suppresses HRV independently of
      training (see `coach/athlete.md` "Recovery markers"). Ask the user about an
      isolated spike rather than assuming overload.
+   - **Weight: read the weekly trend + composition, not the raw kg.** Watch
+     **lean mass (kg) staying ~stable while fat mass drops** = clean loss; if lean
+     mass falls, the deficit is too aggressive (see `coach/athlete.md` "Poids").
+     Respect the ≤2 kg/month guard, and don't push a deficit through the peak
+     block. Cross-check against EF (`vs efficiency`) + recovery. Log the week's
+     value into the `coach/athlete.md` weight table.
 
 4. **Write the journal entry.** Prepend a dated entry to the top of
    `coach/journal/YYYY-<race>.md` (template: `templates/journal-entry.md`):
