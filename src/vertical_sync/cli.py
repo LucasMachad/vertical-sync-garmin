@@ -89,6 +89,33 @@ def _garmin_client():
     return client
 
 
+def _renpho_client():
+    """Login to Renpho via its unofficial cloud API.
+
+    Renpho has no official API; this uses the reverse-engineered endpoints from
+    the `renpho-api` package. Credentials come from RENPHO_EMAIL / RENPHO_PASSWORD
+    in the environment (.env), never hardcoded — same pattern as the Garmin client.
+    """
+    import os
+
+    from dotenv import load_dotenv
+    from renpho import RenphoClient
+
+    load_dotenv()
+    try:
+        email = os.environ["RENPHO_EMAIL"]
+        password = os.environ["RENPHO_PASSWORD"]
+    except KeyError as missing:
+        click.echo(
+            f"Missing {missing} — add RENPHO_EMAIL and RENPHO_PASSWORD to .env",
+            err=True,
+        )
+        sys.exit(1)
+    client = RenphoClient(email=email, password=password)
+    client.login()
+    return client
+
+
 @cli.command()
 def login():
     """Test the Garmin Connect login."""
@@ -245,6 +272,172 @@ def recovery(start, end, as_json):
             f"max {summary['rhr_max']}  ({summary['days_with_rhr']}j RHR, "
             f"{summary['days_with_hrv']}j VFC)"
         )
+
+
+# ---------------------------------------------------------------------------
+# weight (body composition from a Renpho smart scale)
+# ---------------------------------------------------------------------------
+
+def _measurement_date(m: dict) -> str | None:
+    """ISO date (YYYY-MM-DD) from a Renpho measurement timestamp (seconds or ms)."""
+    from datetime import datetime
+
+    ts = m.get("timeStamp") or m.get("time_stamp")
+    if ts is None:
+        return None
+    ts = int(ts)
+    if ts > 1e12:
+        ts //= 1000
+    return datetime.fromtimestamp(ts).date().isoformat()
+
+
+def _weekly_aggregate(rows: list) -> list:
+    """Group daily rows into ISO-week buckets (Monday start), mean per metric.
+
+    A daily weigh-in fluctuates ±1 kg with water/glycogen/sodium; the weekly mean
+    is the honest trend signal. Each week averages only the values present."""
+    from collections import defaultdict
+    from datetime import datetime, timedelta
+
+    buckets: dict = defaultdict(list)
+    for r in rows:
+        d = datetime.strptime(r["date"], "%Y-%m-%d").date()
+        monday = (d - timedelta(days=d.weekday())).isoformat()
+        buckets[monday].append(r)
+
+    def _mean(group, key):
+        vals = [g[key] for g in group if g[key] is not None]
+        return round(sum(vals) / len(vals), 1) if vals else None
+
+    weeks = []
+    for monday in sorted(buckets):
+        g = buckets[monday]
+        weeks.append({
+            "week_start": monday,
+            "n": len(g),
+            "weight_kg": _mean(g, "weight_kg"),
+            "bodyfat_pct": _mean(g, "bodyfat_pct"),
+            "muscle_pct": _mean(g, "muscle_pct"),
+            "lean_mass_kg": _mean(g, "lean_mass_kg"),
+            "fat_mass_kg": _mean(g, "fat_mass_kg"),
+        })
+    return weeks
+
+
+@cli.command()
+@click.option("--start", default=None, help="Start date (YYYYMMDD or YYYY-MM-DD)")
+@click.option("--end", default=None, help="End date (YYYYMMDD or YYYY-MM-DD)")
+@click.option("--weekly", is_flag=True,
+              help="Aggregate by ISO week (mean per week) — smooths daily noise")
+@click.option("--json", "as_json", is_flag=True, help="JSON output")
+def weight(start, end, weekly, as_json):
+    """Weight + body composition from a Renpho smart scale (default: last 90 days).
+
+    Pulls via the unofficial Renpho cloud API (needs RENPHO_EMAIL / RENPHO_PASSWORD
+    in .env). Consumer bioimpedance body-fat / muscle % are reliable as a *trend*
+    on the same scale and conditions, not as absolute values — read the direction,
+    not the exact number. Lean mass (kg) is the best muscle-preservation signal in
+    a deficit. Use --weekly for the honest trend (means daily noise away).
+    """
+    from datetime import date, datetime, timedelta
+
+    end_d = (datetime.strptime(str(parse_date(end)), "%Y%m%d").date()
+             if end else date.today())
+    start_d = (datetime.strptime(str(parse_date(start)), "%Y%m%d").date()
+               if start else end_d - timedelta(days=90))
+    if start_d > end_d:
+        click.echo("start must be on or before end.", err=True)
+        sys.exit(1)
+
+    client = _renpho_client()
+    raw = client.get_all_measurements()
+
+    # Measurements come newest-first: keep the first seen per day (the latest of
+    # that day), filtered to the window, then re-sort oldest -> newest for reading.
+    seen: set = set()
+    rows = []
+    for m in raw:
+        ds = _measurement_date(m)
+        if ds is None or ds in seen:
+            continue
+        d = datetime.strptime(ds, "%Y-%m-%d").date()
+        if not (start_d <= d <= end_d):
+            continue
+        seen.add(ds)
+        w = m.get("weight")
+        bf = m.get("bodyfat")
+        rows.append({
+            "date": ds,
+            "weight_kg": round(w, 1) if w else None,
+            "bodyfat_pct": round(bf, 1) if bf else None,
+            "muscle_pct": round(m["muscle"], 1) if m.get("muscle") else None,
+            "lean_mass_kg": round(m["sinew"], 1) if m.get("sinew") else None,
+            "fat_mass_kg": round(w * bf / 100, 1) if (w and bf) else None,
+        })
+    rows.sort(key=lambda r: r["date"])
+
+    display = _weekly_aggregate(rows) if weekly else rows
+    date_key = "week_start" if weekly else "date"
+
+    summary = {}
+    pts = [x for x in display if x["weight_kg"] is not None]
+    if len(pts) >= 2:
+        first, last = pts[0], pts[-1]
+        span = (datetime.strptime(last[date_key], "%Y-%m-%d").date()
+                - datetime.strptime(first[date_key], "%Y-%m-%d").date()).days or 1
+        dw = round(last["weight_kg"] - first["weight_kg"], 1)
+        summary = {
+            "first": first[date_key],
+            "last": last[date_key],
+            "weight_delta_kg": dw,
+            "weight_per_month_kg": round(dw / span * 30, 2),
+            "points": len(pts),
+        }
+        if first["fat_mass_kg"] is not None and last["fat_mass_kg"] is not None:
+            summary["fat_mass_delta_kg"] = round(
+                last["fat_mass_kg"] - first["fat_mass_kg"], 1)
+        if first["lean_mass_kg"] is not None and last["lean_mass_kg"] is not None:
+            summary["lean_mass_delta_kg"] = round(
+                last["lean_mass_kg"] - first["lean_mass_kg"], 1)
+
+    if as_json:
+        key = "weeks" if weekly else "measurements"
+        click.echo(json.dumps(
+            {key: display, "summary": summary}, default=str, indent=2))
+        return
+
+    header = "POIDS + COMPOSITION (Renpho)" + (" — moyennes hebdo" if weekly else "")
+    click.echo(f"\n  {header}")
+    click.echo(f"  {start_d.isoformat()} -> {end_d.isoformat()}")
+    click.echo(f"  {'-' * 58}")
+    label = "Semaine" if weekly else "Date"
+    click.echo(f"  {label:<12}{' n' if weekly else '':>3} {'Poids':>6} {'%MG':>5} "
+               f"{'%Mus':>5} {'Maigre':>7} {'MG kg':>6}")
+    for r in display:
+        def _f(v):
+            return str(v) if v is not None else "-"
+        n_col = f"{r['n']:>3}" if weekly else "   "
+        click.echo(
+            f"  {r[date_key]:<12}{n_col} {_f(r['weight_kg']):>6} "
+            f"{_f(r['bodyfat_pct']):>5} {_f(r['muscle_pct']):>5} "
+            f"{_f(r['lean_mass_kg']):>7} {_f(r['fat_mass_kg']):>6}"
+        )
+    if summary:
+        click.echo(f"  {'-' * 58}")
+        click.echo(
+            f"  Delta poids {summary['weight_delta_kg']:+g} kg "
+            f"({summary['weight_per_month_kg']:+g}/mois) "
+            f"sur {summary['first']} -> {summary['last']}"
+        )
+        extra = []
+        if "fat_mass_delta_kg" in summary:
+            extra.append(f"graisse {summary['fat_mass_delta_kg']:+g} kg")
+        if "lean_mass_delta_kg" in summary:
+            extra.append(f"masse maigre {summary['lean_mass_delta_kg']:+g} kg")
+        if extra:
+            click.echo("  Delta " + " / ".join(extra))
+    elif not display:
+        click.echo("  Aucune mesure sur la periode.")
 
 
 # ---------------------------------------------------------------------------
