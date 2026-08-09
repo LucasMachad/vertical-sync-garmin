@@ -25,7 +25,7 @@ All analysis commands support `--json` for structured AI-readable output.
 | Command | Purpose |
 |---------|---------|
 | `vs list [--json]` | List available FIT files |
-| `vs analyze <date> [--json]` | Analyze a single activity (date YYYYMMDD or file path) |
+| `vs analyze <date...> [--merge] [--json]` | Analyze an activity (date YYYYMMDD or file path). `--merge` stitches multiple files into one activity (a run split across recordings) |
 | `vs profile <date> [--json]` | Pace + HR profile by gradient bucket for one activity |
 | `vs week --start X --end Y [--json]` | Weekly analysis with summary + plan comparison |
 | `vs assess [--start X --end Y] [--json]` | Strengths/weaknesses assessment |
