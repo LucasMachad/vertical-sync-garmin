@@ -15,8 +15,10 @@ from .fit_parser import (
     find_fit_files,
     format_duration,
     is_quality_session,
+    merge_fit_data,
     parse_fit,
 )
+from .fit_parser import _session_start
 from .analysis import assess_activity, assess_week
 
 
@@ -470,25 +472,59 @@ def list_files(start, end, as_json):
 # analyze (single activity)
 # ---------------------------------------------------------------------------
 
-@cli.command()
-@click.argument("target")
-@click.option("--json", "as_json", is_flag=True, help="JSON output")
-def analyze(target, as_json):
-    """Analyze a single activity.
+def _resolve_targets(targets: tuple[str, ...]) -> list[Path]:
+    """Resolve analyze targets (file paths or dates) to FIT file paths.
 
-    TARGET can be a date (YYYYMMDD or YYYY-MM-DD) or a file path.
-    """
-    path = Path(target)
-    if not path.exists():
-        date_int = parse_date(target)
-        files = find_fit_files(start=date_int, end=date_int)
-        if not files:
-            click.echo(f"No FIT file found for {target}", err=True)
+    A file path resolves to itself; a date resolves to every FIT file that day.
+    Deduped, preserving first-seen order."""
+    paths: list[Path] = []
+    for t in targets:
+        p = Path(t)
+        if p.exists():
+            paths.append(p)
+            continue
+        date_int = parse_date(t)
+        found = find_fit_files(start=date_int, end=date_int)
+        if not found:
+            click.echo(f"No FIT file found for {t}", err=True)
             sys.exit(1)
-        path = files[0]
+        paths.extend(found)
+    seen, unique = set(), []
+    for p in paths:
+        if p not in seen:
+            seen.add(p)
+            unique.append(p)
+    return unique
 
-    fit_data = parse_fit(path)
-    metrics = analyze_activity(fit_data, path.name)
+
+@cli.command()
+@click.argument("targets", nargs=-1, required=True)
+@click.option("--merge", "do_merge", is_flag=True,
+              help="Merge all resolved files into one activity (a run split "
+                   "across files, e.g. the watch stopped mid-session)")
+@click.option("--json", "as_json", is_flag=True, help="JSON output")
+def analyze(targets, do_merge, as_json):
+    """Analyze an activity.
+
+    TARGETS is one or more dates (YYYYMMDD or YYYY-MM-DD) or file paths. With
+    --merge, all resolved files are stitched into a single continuous activity
+    (for a run split into multiple files); otherwise the first is analyzed.
+    """
+    paths = _resolve_targets(targets)
+
+    if do_merge:
+        parsed = [(p, parse_fit(p)) for p in paths]
+        # Order chronologically so distance/time stitch correctly.
+        parsed.sort(key=lambda pp: _session_start(pp[1]) or pp[0].name)
+        merged = merge_fit_data([pp[1] for pp in parsed])
+        # Name after the first part; note how many were merged.
+        name = parsed[0][0].name
+        metrics = analyze_activity(merged, name)
+        if metrics:
+            metrics["merged_from"] = [pp[0].name for pp in parsed]
+    else:
+        path = paths[0]
+        metrics = analyze_activity(parse_fit(path), path.name)
 
     if not metrics:
         click.echo("No session data in this FIT file.", err=True)
@@ -499,6 +535,9 @@ def analyze(target, as_json):
     if as_json:
         click.echo(json.dumps({"activity": metrics, "assessment": assessment}, default=str, indent=2))
     else:
+        if metrics.get("merged_from"):
+            click.echo(f"  [merged {len(metrics['merged_from'])} files: "
+                       f"{', '.join(metrics['merged_from'])}]")
         _print_activity(metrics)
         if assessment:
             click.echo("")

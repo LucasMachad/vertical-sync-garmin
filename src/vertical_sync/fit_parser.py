@@ -50,6 +50,89 @@ def get_date_from_filename(filename: str) -> int:
     return int(filename[:8])
 
 
+def _session_start(parsed: dict):
+    """Start time of a parsed activity, for ordering split recordings."""
+    sess = parsed.get("sessions") or [{}]
+    return sess[0].get("start_time")
+
+
+def merge_fit_data(parsed_list: list[dict]) -> dict:
+    """Merge several parsed activities (from `parse_fit`) into one continuous
+    activity — for a single run that got split into files (e.g. the watch
+    auto-paused/stopped mid-session and had to be restarted).
+
+    Inputs are merged in the order given (pass them chronologically). For each
+    file after the first, the cumulative ``distance`` is offset to continue from
+    the previous file, and every ``timestamp`` is shifted so the real-world gap
+    between recordings collapses to 1 s — that pause was never active time, so it
+    must not inflate dt-based metrics (uphill time, gradient-profile time). The
+    concatenated records then flow through the normal analysis, which recomputes
+    zones / drift / GAP over the whole run. Session totals are summed; HR and
+    cadence are averaged weighted by each part's timer time.
+    """
+    import datetime as _dt
+
+    parts = [p for p in parsed_list if p.get("records")]
+    if not parts:
+        return {"records": [], "sessions": [], "laps": []}
+    if len(parts) == 1:
+        return parts[0]
+
+    merged_records: list = []
+    merged_laps: list = []
+    dist_offset = 0.0
+    prev_last_ts = None
+
+    for p in parts:
+        recs = [dict(r) for r in p["records"]]
+        first_ts = next((r.get("timestamp") for r in recs if r.get("timestamp")), None)
+        shift = (
+            (prev_last_ts + _dt.timedelta(seconds=1)) - first_ts
+            if prev_last_ts is not None and first_ts is not None
+            else _dt.timedelta(0)
+        )
+        file_max_dist = dist_offset
+        for r in recs:
+            if r.get("timestamp") is not None:
+                r["timestamp"] = r["timestamp"] + shift
+            if r.get("distance") is not None:
+                r["distance"] = r["distance"] + dist_offset
+                file_max_dist = max(file_max_dist, r["distance"])
+            merged_records.append(r)
+        dist_offset = file_max_dist
+        prev_last_ts = next(
+            (r.get("timestamp") for r in reversed(recs) if r.get("timestamp")), prev_last_ts
+        )
+        merged_laps.extend(p.get("laps", []))
+
+    sessions = [p["sessions"][0] for p in parts if p.get("sessions")]
+
+    def _sum(key):
+        return sum((s.get(key) or 0) for s in sessions)
+
+    total_time = _sum("total_timer_time")
+
+    def _wavg(key):
+        if not total_time:
+            return 0
+        return sum((s.get(key) or 0) * (s.get("total_timer_time") or 0) for s in sessions) / total_time
+
+    total_distance = _sum("total_distance")
+    merged_session = dict(sessions[0]) if sessions else {}
+    merged_session.update({
+        "total_distance": total_distance,
+        "total_timer_time": total_time,
+        "total_ascent": _sum("total_ascent"),
+        "total_descent": _sum("total_descent"),
+        "avg_heart_rate": round(_wavg("avg_heart_rate")) if sessions else 0,
+        "max_heart_rate": max((s.get("max_heart_rate") or 0) for s in sessions) if sessions else 0,
+        "avg_running_cadence": _wavg("avg_running_cadence"),
+        "enhanced_avg_speed": (total_distance / total_time) if total_time else 0,
+    })
+
+    return {"records": merged_records, "sessions": [merged_session], "laps": merged_laps}
+
+
 # A footing keeps almost all of its time in the aerobic zones; threshold and
 # interval sessions pile up time in Z4-Z5, and that intensity distorts the
 # GAP/HR efficiency signal, so we drop them from the trend. We classify by what
