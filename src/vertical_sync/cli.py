@@ -338,8 +338,20 @@ def weight(start, end, weekly, as_json):
     Pulls via the unofficial Renpho cloud API (needs RENPHO_EMAIL / RENPHO_PASSWORD
     in .env). Consumer bioimpedance body-fat / muscle % are reliable as a *trend*
     on the same scale and conditions, not as absolute values — read the direction,
-    not the exact number. Lean mass (kg) is the best muscle-preservation signal in
-    a deficit. Use --weekly for the honest trend (means daily noise away).
+    not the exact number. Use --weekly for the honest trend (means daily noise away).
+
+    On lean_mass_kg: the scale measures ONE physical thing — electrical impedance.
+    A regression (impedance + weight + height + age + sex) turns that into a single
+    body-fat % estimate; fat mass, lean mass and muscle % are all arithmetic
+    re-dressings of that one number plus weight (lean = weight - fat). So they are
+    NOT independent readings and cannot cross-confirm each other — lean mass carries
+    exactly the same error as the body-fat estimate (hydration, regression bias).
+    It stays the best *muscle-preservation* proxy in a deficit only because it is in
+    absolute kg (less misleading than a %) and is what you want held stable — not
+    because it is separately measured. Trust its long-run direction, not any single
+    reading, and always cross-check against a body-independent anchor (running power/
+    pace-at-HR, session RPE): if performance holds while lean mass drifts down slowly,
+    it is far more likely noise than real muscle loss.
     """
     from datetime import date, datetime, timedelta
 
@@ -373,6 +385,10 @@ def weight(start, end, weekly, as_json):
             "weight_kg": round(w, 1) if w else None,
             "bodyfat_pct": round(bf, 1) if bf else None,
             "muscle_pct": round(m["muscle"], 1) if m.get("muscle") else None,
+            # Renpho's "sinew" (fat-free mass). Not an independent measurement:
+            # derived by the scale from the same impedance -> body-fat estimate
+            # (lean = weight - fat), so it inherits that estimate's error. See the
+            # command docstring for why it's a trend proxy, not a precise reading.
             "lean_mass_kg": round(m["sinew"], 1) if m.get("sinew") else None,
             "fat_mass_kg": round(w * bf / 100, 1) if (w and bf) else None,
         })
