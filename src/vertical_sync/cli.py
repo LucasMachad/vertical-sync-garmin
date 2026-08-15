@@ -19,6 +19,7 @@ from .fit_parser import (
     parse_fit,
 )
 from .fit_parser import _session_start
+from .gpx_parser import analyze_gpx
 from .analysis import assess_activity, assess_week
 
 
@@ -561,6 +562,40 @@ def analyze(targets, do_merge, as_json):
 
 
 # ---------------------------------------------------------------------------
+# course (race route from a GPX track)
+# ---------------------------------------------------------------------------
+
+@cli.command()
+@click.argument("gpx_path")
+@click.option("--json", "as_json", is_flag=True, help="JSON output")
+def course(gpx_path, as_json):
+    """Analyze a race route from a GPX track.
+
+    GPX_PATH is a .gpx route file (e.g. exported from Openrunner or
+    tracedetrail). Reports distance, D+/D-, vertical ratio, km-effort, the
+    per-kilometre profile, the major climb/descent segments and the gradient
+    distribution — the terrain, to prepare pacing.
+
+    Any timestamps in the file are the mapping tool's *planned* schedule, not a
+    real recording, so they are ignored. Use --json for structured output.
+    """
+    path = Path(gpx_path)
+    if not path.exists():
+        click.echo(f"No GPX file at {gpx_path}", err=True)
+        sys.exit(1)
+
+    profile = analyze_gpx(path)
+    if not profile:
+        click.echo("No usable track points in this GPX file.", err=True)
+        sys.exit(1)
+
+    if as_json:
+        click.echo(json.dumps(profile, indent=2))
+    else:
+        _print_course(profile)
+
+
+# ---------------------------------------------------------------------------
 # week
 # ---------------------------------------------------------------------------
 
@@ -1060,6 +1095,48 @@ def _print_activity(m: dict):
                     f"{lap['duration']:>8} {lap['pace']:>7}/km "
                     f"{lap['avg_hr']:>3} {lap['ascent_m']:>4}m"
                 )
+
+
+def _print_course(p: dict):
+    """Human-readable GPX race-route profile."""
+    click.echo(f"\n{'=' * 60}")
+    click.echo(f"  PROFIL COURSE — {p['source']}")
+    click.echo(f"{'=' * 60}")
+    click.echo(f"  Distance:      {p['distance_km']:.1f} km")
+    click.echo(f"  D+ / D-:       {p['ascent_m']} m / {p['descent_m']} m")
+    click.echo(f"  Ratio vert.:   {p['vertical_ratio_m_km']} m/km")
+    click.echo(f"  Km-effort:     {p['km_effort']}")
+    click.echo(f"  Altitude:      {p['elevation']['min']}m — {p['elevation']['max']}m")
+    click.echo(f"  Points GPS:    {p['points']}")
+
+    # Major climb / descent segments — the shape of the race.
+    if p.get("segments"):
+        click.echo("\n  Segments majeurs (montees / descentes) :")
+        click.echo(f"    {'#':<3} {'km':>11} {'dist':>6} {'D+':>5} {'D-':>5} {'pente':>7}  type")
+        for i, s in enumerate(p["segments"], 1):
+            kind = "MONTEE  " if s["type"] == "climb" else "descente"
+            click.echo(
+                f"    {i:<3} {s['start_km']:>4.1f}-{s['end_km']:<5.1f} "
+                f"{s['distance_km']:>5.1f}k {s['ascent_m']:>4}m {s['descent_m']:>4}m "
+                f"{s['avg_grade_pct']:>+6.1f}%  {kind}"
+            )
+
+    # Per-km net-elevation strip.
+    if p.get("per_km"):
+        click.echo("\n  Profil km par km (D+ / D-) :")
+        click.echo(f"    {'km':>3} {'D+':>4} {'D-':>4}  profil (net)")
+        for row in p["per_km"]:
+            net = row["net_m"]
+            bar = ("#" * int(row["ascent_m"] / 12)) if net >= 0 else ("." * int(row["descent_m"] / 12))
+            click.echo(f"    {row['km']:>3} {row['ascent_m']:>4} {row['descent_m']:>4}  {bar}")
+
+    # Distance by gradient band.
+    if p.get("gradient_distribution"):
+        click.echo("\n  Distribution par pente :")
+        for b in p["gradient_distribution"]:
+            bar_len = int(b["pct"] / 5)
+            bar = "█" * bar_len + "░" * (20 - bar_len)
+            click.echo(f"    {b['range']:>12} {bar} {b['pct']:5.1f}%  ({b['distance_m']/1000:.1f} km)")
 
 
 def _print_week_summary(summary: dict, start_date: int):
