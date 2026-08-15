@@ -27,6 +27,7 @@ All analysis commands support `--json` for structured AI-readable output.
 | `vs list [--json]` | List available FIT files |
 | `vs analyze <date...> [--merge] [--json]` | Analyze an activity (date YYYYMMDD or file path). `--merge` stitches multiple files into one activity (a run split across recordings) |
 | `vs profile <date> [--json]` | Pace + HR profile by gradient bucket for one activity |
+| `vs course <file.gpx> [--json]` | Terrain profile of a race route from a GPX track: distance, D+/D−, per-km profile, major climb/descent segments, gradient distribution (planned timestamps ignored — geometry only, for pacing) |
 | `vs week --start X --end Y [--json]` | Weekly analysis with summary + plan comparison |
 | `vs assess [--start X --end Y] [--json]` | Strengths/weaknesses assessment |
 | `vs efficiency [--start X --end Y] [--json]` | Efficiency factor (GAP/HR) trend over easy footing runs (quality sessions excluded by measured Z4-Z5 intensity) |
@@ -43,6 +44,7 @@ All analysis commands support `--json` for structured AI-readable output.
 src/vertical_sync/
 ├── config.py       # Loads athlete.toml + coach/plan frontmatter, paths, constants
 ├── fit_parser.py   # FIT parsing, metric extraction, weekly summary
+├── gpx_parser.py   # GPX route parsing → race-course terrain profile (for pacing)
 ├── analysis.py     # Strengths/weaknesses assessment (activity + week level)
 └── cli.py          # Click CLI commands + output formatting
 ```
