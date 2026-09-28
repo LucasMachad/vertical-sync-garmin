@@ -66,6 +66,11 @@ def cli():
 
     Use --json on any analysis command for structured AI-readable output.
     """
+    # Windows consoles default to cp1252, which can't encode the box-drawing
+    # and bar characters used in human output — force UTF-8.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 # ---------------------------------------------------------------------------
