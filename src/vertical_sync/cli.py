@@ -1282,6 +1282,8 @@ def _print_session(s: dict):
     click.echo(f"{'=' * 72}")
     click.echo(f"  {sm['reps']} reps / {sm['sets']} serie(s), travail {sm['work_time']}, "
                f"Z4-Z5 {sm['z4_z5_pct']}%  — cibles : {sm['targets']}")
+    if sm["skipped_reps"]:
+        click.echo(f"  ({sm['skipped_reps']} rep(s) sautee(s) au bouton lap, ignoree(s))")
     if sm["targets"] == "open" and s.get("vdot"):
         click.echo(f"  (pas de cible dans la seance : reps placees face aux allures VDOT {s['vdot']})")
 
@@ -1326,8 +1328,8 @@ def _print_session(s: dict):
 
     drops = [r for r in s["recoveries"] if r["hr_drop_60s"] is not None]
     if drops:
-        click.echo("\n  Recup (baisse FC en 60 s) : "
-                   + "  ".join(f"apres #{r['after_rep']}: {r['hr_start']}-{r['hr_drop_60s']}" for r in drops))
+        click.echo("\n  Recup (FC debut -> variation en 60 s) : "
+                   + "  ".join(f"apres #{r['after_rep']}: {r['hr_start']} {-r['hr_drop_60s']:+d}" for r in drops))
 
 
 def _print_week_summary(summary: dict, start_date: int):

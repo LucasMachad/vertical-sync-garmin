@@ -4,6 +4,9 @@ Works on Garmin structured workouts, where every lap is one workout step and
 carries its ``intensity`` (warmup / active / recovery / rest / cooldown) and
 ``wkt_step_index``. The laps are trusted as-is: an ``active`` lap is a rep, and
 reps that come from the same workout step form a set (2x8x30/30 -> 2 sets).
+One exception, from the workout structure itself: when the workout has repeat
+blocks, an ``active`` step outside them is the between-sets recovery (Garmin
+templates like 2x8x30/30 R3 tag it active) and is treated as a recovery.
 
 The pace target of a rep is read from its workout step (custom speed range).
 When the step has no target ("open"), each rep is placed against the VDOT
@@ -27,6 +30,7 @@ HILLY_VERT_PCT = 2.0       # (D+ + D-) / distance above which a rep is compared 
 END_HR_WINDOW_S = 10       # HR at the end of a rep = mean of its last N seconds
 HRR_MIN_RECOVERY_S = 90    # HR drop over 60 s only measured on recoveries this long
 HRR_WINDOW_S = 60
+MIN_REP_S = 10             # shorter active laps are steps skipped with the lap button
 
 
 def _pace_s(speed_ms: float | None) -> float | None:
@@ -206,6 +210,17 @@ def _set_summary(reps: list[dict]) -> dict:
     }
 
 
+def repeated_steps(workout_steps: list[dict]) -> set | None:
+    """Indices of the steps inside repeat blocks, or None if the workout has no
+    repeats. A repeat step at index k with ``duration_step`` j repeats steps
+    j..k-1."""
+    inside = set()
+    for s in workout_steps:
+        if str(s.get("duration_type", "")).startswith("repeat") and s.get("duration_step") is not None:
+            inside.update(range(int(s["duration_step"]), int(s["message_index"])))
+    return inside or None
+
+
 def analyze_session(fit_data: dict, filename: str, vdot: float | None = None) -> dict | None:
     """Break a structured workout into warmup / sets of reps / recoveries /
     cooldown, with per-rep target compliance and per-set execution KPIs.
@@ -219,8 +234,10 @@ def analyze_session(fit_data: dict, filename: str, vdot: float | None = None) ->
         records["timestamp_dt"] = pd.to_datetime(records["timestamp"])
     steps = {s.get("message_index"): s for s in fit_data.get("workout_steps") or []}
     vdot_paces = training_paces(vdot) if vdot else None
+    in_repeats = repeated_steps(fit_data.get("workout_steps") or [])
 
     reps, recoveries, other = [], [], []
+    skipped = 0
     set_order: list = []
     prev_rep = None
     for lap in laps:
@@ -230,6 +247,12 @@ def analyze_session(fit_data: dict, filename: str, vdot: float | None = None) ->
         row = _lap_base(lap, recs)
         step_idx = lap.get("wkt_step_index")
 
+        if intensity == ACTIVE and in_repeats is not None and step_idx not in in_repeats:
+            intensity = "between_sets"
+        if intensity == ACTIVE and (lap.get("total_timer_time") or 0) < MIN_REP_S:
+            skipped += 1
+            continue
+
         if intensity == ACTIVE:
             if step_idx not in set_order:
                 set_order.append(step_idx)
@@ -238,13 +261,17 @@ def analyze_session(fit_data: dict, filename: str, vdot: float | None = None) ->
             _against_target(row, step_target(steps.get(step_idx)), vdot_paces)
             reps.append(row)
             prev_rep = row
-        elif intensity in ("recovery", "rest"):
+        elif intensity in ("recovery", "rest", "between_sets"):
+            row["kind"] = intensity
             row.update(_hr_recovery(recs, duration))
             row["after_rep"] = prev_rep["n"] if prev_rep else None
             recoveries.append(row)
         else:
             row["phase"] = intensity
             other.append(row)
+
+    if not reps:
+        return None
 
     sets = []
     for i in range(1, len(set_order) + 1):
@@ -270,6 +297,7 @@ def analyze_session(fit_data: dict, filename: str, vdot: float | None = None) ->
         "sets": sets,
         "summary": {
             "reps": len(reps),
+            "skipped_reps": skipped,
             "sets": len(sets),
             "work_time_s": sum(r["duration_s"] for r in reps),
             "work_time": format_duration(sum(r["duration_s"] for r in reps)),
