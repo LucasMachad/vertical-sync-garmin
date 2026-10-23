@@ -31,6 +31,7 @@ All analysis commands support `--json` for structured AI-readable output.
 | `vs week --start X --end Y [--json]` | Weekly analysis with summary + plan comparison |
 | `vs assess [--start X --end Y] [--json]` | Strengths/weaknesses assessment |
 | `vs efficiency [--start X --end Y] [--json]` | Efficiency factor (GAP/HR) trend over easy footing runs (quality sessions excluded by measured Z4-Z5 intensity) |
+| `vs session <date> [--json]` | Quality-session execution for a Garmin structured workout (1 lap = 1 step; active laps = reps, sets by workout step). Per rep: pace, GAP (lap barometric net grade, used on hilly reps), HR, end-of-rep HR, compliance with the step's pace/HR target or nearest VDOT pace when open. Per set: pace CV, fade, end-HR drift. HR drop over 60 s on recoveries ≥ 90 s. Plus `assess_session` observations |
 | `vs vdot [--distance D --time T] [--json]` | VDOT (Daniels–Gilbert): race-time predictions (1500m → marathon) + E/M/T/I/R training paces. From a race/time trial, else `[speed] vdot` in `config/athlete.toml`, else estimated from `threshold_pace_s_per_km`; T pace cross-checked against the config threshold |
 | `vs plan [--week N] [--json]` | Training plan targets (read from `coach/plan/*.md`) |
 | `vs recovery [--start X --end Y] [--json]` | Resting HR (daily) + overnight HRV history from Garmin (default: last 14 days) |
@@ -47,6 +48,7 @@ src/vertical_sync/
 ├── fit_parser.py   # FIT parsing, metric extraction, weekly summary
 ├── gpx_parser.py   # GPX route parsing → race-course terrain profile (for pacing)
 ├── vdot.py         # Daniels VDOT: race predictions + training pace zones
+├── session.py      # Quality-session analysis: reps, targets, execution KPIs
 ├── analysis.py     # Strengths/weaknesses assessment (activity + week level)
 └── cli.py          # Click CLI commands + output formatting
 ```
@@ -56,7 +58,7 @@ src/vertical_sync/
   and the weekly plan targets from `coach/plan/*.md` TOML frontmatter. No
   hardcoded personal data.
 - **fit_parser.py**: `parse_fit()`, `analyze_activity()`, `compute_week_summary()`, `find_fit_files()`
-- **analysis.py**: `assess_activity()` and `assess_week()` return typed observations (strength/weakness/info)
+- **analysis.py**: `assess_activity()`, `assess_week()` and `assess_session()` return typed observations (strength/weakness/info)
 - **cli.py**: Click commands, human + JSON output modes
 
 ## Coach memory & skills

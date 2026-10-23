@@ -29,8 +29,11 @@ _minetti_vec = np.vectorize(minetti_cost)
 
 
 def parse_fit(path: Path) -> dict:
-    """Parse a FIT file into records, sessions, and laps."""
+    """Parse a FIT file into records, sessions, laps and the structured workout
+    (``workout`` name + ``workout_steps`` with their targets, empty when the run
+    wasn't a Garmin structured workout)."""
     records, sessions, laps = [], [], []
+    workout, workout_steps = {}, []
     with fitdecode.FitReader(str(path)) as fit:
         for frame in fit:
             if not isinstance(frame, fitdecode.FitDataMessage):
@@ -42,7 +45,12 @@ def parse_fit(path: Path) -> dict:
                 sessions.append(row)
             elif frame.name == "lap":
                 laps.append(row)
-    return {"records": records, "sessions": sessions, "laps": laps}
+            elif frame.name == "workout":
+                workout = row
+            elif frame.name == "workout_step":
+                workout_steps.append(row)
+    return {"records": records, "sessions": sessions, "laps": laps,
+            "workout": workout, "workout_steps": workout_steps}
 
 
 def get_date_from_filename(filename: str) -> int:

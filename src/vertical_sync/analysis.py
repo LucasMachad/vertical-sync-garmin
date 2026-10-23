@@ -254,3 +254,98 @@ def assess_week(week_summary: dict, activities: list[dict], start_date: int) -> 
             })
 
     return obs
+
+
+def assess_session(session: dict) -> list[dict]:
+    """Assess the execution of a quality session (output of analyze_session).
+
+    Flags only what the numbers show — target compliance, start too fast,
+    fade within a set, regularity, rising HR cost. Whether a fade was planned
+    (progressive set) or a miss was terrain is for the LLM to judge."""
+    obs = []
+
+    # --- Target compliance ---
+    s = session["summary"]
+    if s["with_target"]:
+        ratio = s["in_target"] / s["with_target"]
+        if ratio >= 0.8:
+            obs.append({
+                "type": "strength",
+                "category": "target",
+                "detail": f"{s['in_target']}/{s['with_target']} reps dans la cible",
+                "implication": "Seance executee comme prescrite",
+            })
+        elif ratio < 0.6:
+            obs.append({
+                "type": "weakness",
+                "category": "target",
+                "detail": f"Seulement {s['in_target']}/{s['with_target']} reps dans la cible",
+                "implication": "Cible mal calibree, ou execution a revoir (terrain, fatigue, depart)",
+            })
+
+    # --- Start too fast: first reps of a set well ahead of target ---
+    for st in session["sets"]:
+        reps = [r for r in session["reps"] if r["set"] == st["set"]]
+        early = [r["target_delta_s_per_km"] for r in reps[:2] if r["target_delta_s_per_km"] is not None]
+        if early and max(early) <= -5:
+            obs.append({
+                "type": "weakness",
+                "category": "pacing",
+                "detail": f"Serie {st['set']} : premieres reps {-max(early)}+ s/km plus rapides que la cible",
+                "implication": "Depart trop rapide — paye en fin de serie ou en recup",
+            })
+
+    # --- Per-set execution (sets of >= 3 reps) ---
+    for st in session["sets"]:
+        if st["reps"] < 3:
+            continue
+        fade = st["fade_pct"]
+        if fade is not None and fade <= -3:
+            obs.append({
+                "type": "weakness",
+                "category": "fade",
+                "detail": f"Serie {st['set']} : allure en baisse de {-fade:.1f}% entre debut et fin",
+                "implication": "Intensite ou volume au-dessus de ce qui est tenable ce jour-la",
+            })
+        elif fade is not None and fade >= 2:
+            obs.append({
+                "type": "info",
+                "category": "fade",
+                "detail": f"Serie {st['set']} : finit {fade:.1f}% plus vite qu'au debut",
+                "implication": "Progressif, ou debut de serie trop prudent",
+            })
+        cv = st["pace_cv_pct"]
+        if cv is not None and cv <= 2:
+            obs.append({
+                "type": "strength",
+                "category": "regularity",
+                "detail": f"Serie {st['set']} : reps tres regulieres (CV allure {cv}%)",
+                "implication": "Bonne maitrise de l'allure",
+            })
+        elif cv is not None and cv >= 6:
+            obs.append({
+                "type": "weakness",
+                "category": "regularity",
+                "detail": f"Serie {st['set']} : reps irregulieres (CV allure {cv}%)",
+                "implication": "Allure mal tenue (ou terrain variable — verifier vert_pct)",
+            })
+        drift = st["end_hr_drift_bpm"]
+        if drift is not None and drift >= 8 and (fade is None or fade > -3):
+            obs.append({
+                "type": "info",
+                "category": "hr_cost",
+                "detail": f"Serie {st['set']} : FC de fin de rep +{drift} bpm a allure tenue",
+                "implication": "Cout cardiaque qui monte — fatigue ou chaleur",
+            })
+
+    # --- HR recovery between long reps ---
+    first, last = s["hr_drop_60s_first"], s["hr_drop_60s_last"]
+    if first is not None and last is not None and first - last >= 8:
+        obs.append({
+            "type": "info",
+            "category": "recovery",
+            "detail": f"Baisse de FC en 60 s de recup : {first} -> {last} bpm",
+            "implication": "Recuperation qui se degrade au fil de la seance",
+        })
+
+    return obs
