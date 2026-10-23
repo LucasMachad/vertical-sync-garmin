@@ -6,7 +6,7 @@ from pathlib import Path
 
 import click
 
-from .config import FIT_DIR, PLAN_WEEKS, RACE, get_plan_week
+from .config import FIT_DIR, PLAN_WEEKS, RACE, SPEED, THRESHOLD_PACE_S_PER_KM, get_plan_week
 from .fit_parser import (
     analyze_activity,
     compute_gradient_profile,
@@ -20,7 +20,17 @@ from .fit_parser import (
 )
 from .fit_parser import _session_start
 from .gpx_parser import analyze_gpx
-from .analysis import assess_activity, assess_week
+from .vdot import (
+    format_time_s,
+    parse_distance,
+    parse_time,
+    vdot_from_performance,
+    vdot_from_threshold_pace,
+    vdot_report,
+)
+from .analysis import assess_activity, assess_cycle, assess_session, assess_week
+from .cycle import compute_cycle
+from .session import analyze_session
 
 
 def parse_date(value: str) -> int:
@@ -601,6 +611,142 @@ def course(gpx_path, as_json):
 
 
 # ---------------------------------------------------------------------------
+# vdot (race predictions + training pace zones)
+# ---------------------------------------------------------------------------
+
+@cli.command()
+@click.option("--distance", help="Race distance: 5k, 10k, semi, marathon, 3000m, or km (e.g. 8.5)")
+@click.option("--time", "time_str", help="Race time: MM:SS or H:MM:SS")
+@click.option("--json", "as_json", is_flag=True, help="JSON output")
+def vdot(distance, time_str, as_json):
+    """VDOT (Daniels): race-time predictions and training pace zones.
+
+    With --distance and --time, computes VDOT from that performance (a race or
+    all-out time trial). Without them, uses [speed] vdot from the athlete
+    config, or estimates it from threshold_pace_s_per_km if that section is
+    absent. The T pace is cross-checked against the config threshold pace.
+    """
+    if bool(distance) != bool(time_str):
+        click.echo("--distance and --time go together.", err=True)
+        sys.exit(1)
+
+    if distance:
+        try:
+            dist_m, time_s = parse_distance(distance), parse_time(time_str)
+        except ValueError:
+            click.echo(f"Can't parse --distance {distance} / --time {time_str}", err=True)
+            sys.exit(1)
+        value = vdot_from_performance(dist_m, time_s)
+        source = f"{distance} {format_time_s(time_s)}"
+    else:
+        value, source = _reference_vdot()
+        if value is None:
+            click.echo("No VDOT: pass --distance/--time or set [speed] vdot in the config.", err=True)
+            sys.exit(1)
+
+    report = vdot_report(value, source, THRESHOLD_PACE_S_PER_KM)
+    if as_json:
+        click.echo(json.dumps(report, indent=2))
+    else:
+        _print_vdot(report)
+
+
+def _reference_vdot() -> tuple[float | None, str | None]:
+    """Reference VDOT from the config: [speed] vdot, else estimated from the
+    threshold pace. Returns (vdot, source) or (None, None)."""
+    if SPEED.get("vdot"):
+        source = " ".join(str(s) for s in (SPEED.get("source"), SPEED.get("date")) if s) or "config"
+        return SPEED["vdot"], source
+    if THRESHOLD_PACE_S_PER_KM:
+        return (vdot_from_threshold_pace(THRESHOLD_PACE_S_PER_KM),
+                "estimated from threshold_pace_s_per_km (no [speed] vdot in config)")
+    return None, None
+
+
+# ---------------------------------------------------------------------------
+# session (quality-session execution)
+# ---------------------------------------------------------------------------
+
+@cli.command()
+@click.argument("target")
+@click.option("--json", "as_json", is_flag=True, help="JSON output")
+def session(target, as_json):
+    """Analyze the execution of a quality session (structured workout).
+
+    TARGET is a date (YYYYMMDD or YYYY-MM-DD) or a file path. Each lap is one
+    workout step: active laps are the reps, grouped into sets by workout step.
+    Per rep: pace, GAP (used for comparison on hilly reps), HR, end-of-rep HR,
+    and compliance with the step's pace target — or, when the step had no
+    target, the nearest VDOT training pace. Per set: regularity (pace CV),
+    fade, end-of-rep HR drift. HR drop over 60 s on recoveries >= 90 s.
+    """
+    paths = _resolve_targets((target,))
+    # Several runs that day: take the structured workout.
+    parsed = None
+    for p in paths:
+        data = parse_fit(p)
+        if data.get("workout") or parsed is None:
+            parsed, path = data, p
+        if data.get("workout"):
+            break
+
+    vdot_value, vdot_source = _reference_vdot()
+    result = analyze_session(parsed, path.name, vdot_value)
+    if result is None:
+        click.echo(f"{path.name}: no active laps — not a structured workout.", err=True)
+        sys.exit(1)
+    result["vdot_source"] = vdot_source
+    assessment = assess_session(result)
+
+    if as_json:
+        click.echo(json.dumps({"session": result, "assessment": assessment}, indent=2, default=str))
+    else:
+        _print_session(result)
+        if assessment:
+            click.echo("")
+            _print_assessment(assessment)
+
+
+# ---------------------------------------------------------------------------
+# cycle (block tracking: intensity, quality volume, progression)
+# ---------------------------------------------------------------------------
+
+@cli.command()
+@click.option("--start", required=True, help="Cycle start date (YYYYMMDD or YYYY-MM-DD)")
+@click.option("--end", default=None, help="Cycle end date (default: today)")
+@click.option("--json", "as_json", is_flag=True, help="JSON output")
+def cycle(start, end, as_json):
+    """Track a training cycle week by week.
+
+    Per ISO week (running only): volume, time in Z1-Z2 / Z3 / Z4-Z5, quality
+    rep time by VDOT pace (M/T/I/R), longest run, easy-footing EF. Then one row
+    per quality session (rep pace, HR, rep EF, target compliance, HR recovery)
+    to compare like-for-like sessions across the block.
+    """
+    import datetime as _dt
+
+    start_d = parse_date(start)
+    end_d = parse_date(end) if end else int(_dt.date.today().strftime("%Y%m%d"))
+    files = find_fit_files(start_d, end_d)
+    if not files:
+        click.echo(f"No FIT files for {start_d}..{end_d}", err=True)
+        sys.exit(1)
+
+    vdot_value, vdot_source = _reference_vdot()
+    result = compute_cycle(files, vdot_value)
+    result["vdot_source"] = vdot_source
+    assessment = assess_cycle(result)
+
+    if as_json:
+        click.echo(json.dumps({"cycle": result, "assessment": assessment}, indent=2, default=str))
+    else:
+        _print_cycle(result)
+        if assessment:
+            click.echo("")
+            _print_assessment(assessment)
+
+
+# ---------------------------------------------------------------------------
 # week
 # ---------------------------------------------------------------------------
 
@@ -1142,6 +1288,126 @@ def _print_course(p: dict):
             bar_len = int(b["pct"] / 5)
             bar = "█" * bar_len + "░" * (20 - bar_len)
             click.echo(f"    {b['range']:>12} {bar} {b['pct']:5.1f}%  ({b['distance_m']/1000:.1f} km)")
+
+
+def _print_vdot(r: dict):
+    """Human-readable VDOT report."""
+    click.echo(f"\n{'=' * 60}")
+    click.echo(f"  VDOT {r['vdot']}  ({r['source']})")
+    click.echo(f"{'=' * 60}")
+
+    click.echo("\n  Predictions :")
+    for p in r["predictions"]:
+        click.echo(f"    {p['distance']:<9} {p['time']:>8}   ({p['pace']}/km)")
+
+    z = r["paces"]
+    click.echo("\n  Allures d'entrainement (/km) :")
+    click.echo(f"    E  endurance   {z['E']['fast_pace']} - {z['E']['slow_pace']}")
+    click.echo(f"    M  marathon    {z['M']['pace']}")
+    click.echo(f"    T  seuil       {z['T']['pace']}")
+    click.echo(f"    I  VO2max      {z['I']['pace']}")
+    click.echo(f"    R  repetitions {z['R']['pace']}")
+
+    c = r.get("threshold_check")
+    if c:
+        click.echo(f"\n  Seuil config {c['config_threshold_pace']}/km vs T VDOT {c['vdot_t_pace']}/km "
+                   f"({c['diff_s_per_km']:+d} s/km ; VDOT implicite config {c['vdot_implied_by_config']})")
+
+
+def _print_session(s: dict):
+    """Human-readable quality-session breakdown."""
+    sm = s["summary"]
+    click.echo(f"\n{'=' * 72}")
+    click.echo(f"  SEANCE — {s['workout'] or s['filename']}  ({s['duration']})")
+    click.echo(f"{'=' * 72}")
+    click.echo(f"  {sm['reps']} reps / {sm['sets']} serie(s), travail {sm['work_time']}, "
+               f"Z4-Z5 {sm['z4_z5_pct']}%  — cibles : {sm['targets']}")
+    if sm["skipped_reps"]:
+        click.echo(f"  ({sm['skipped_reps']} rep(s) sautee(s) au bouton lap, ignoree(s))")
+    if sm["targets"] == "open" and s.get("vdot"):
+        click.echo(f"  (pas de cible dans la seance : reps placees face aux allures VDOT {s['vdot']})")
+
+    for w in s["warmup_cooldown"]:
+        click.echo(f"  {w['phase']:<9} {w['duration']:>8} {w['pace'] or '-':>6}/km  FC {w['avg_hr']}")
+
+    click.echo(f"\n  {'#':>3} {'ser':>3} {'duree':>8} {'allure':>6} {'GAP':>6} {'vert':>5} "
+               f"{'FC':>4} {'FCfin':>5}  cible")
+    current_set = None
+    for r in s["reps"]:
+        if current_set is not None and r["set"] != current_set:
+            click.echo("")
+        current_set = r["set"]
+        if r["target"]:
+            ok = "OK" if r["in_target"] else (
+                f"{r['target_delta_s_per_km']:+d}s" if r["target_delta_s_per_km"] is not None else "hors")
+            tgt = f"{r['target']['range']} {ok}"
+        elif r["nearest_vdot_zone"]:
+            z = r["nearest_vdot_zone"]
+            tgt = f"~{z['zone']} {z['zone_pace']} ({z['delta_s_per_km']:+d}s)"
+        else:
+            tgt = "-"
+        mark = "*" if r["compared_on"] == "gap" else " "
+        vert = f"{r['vert_pct']}%" if r["vert_pct"] is not None else "-"
+        click.echo(f"  {r['n']:>3} {r['set']:>3} {r['duration']:>8} {r['pace'] or '-':>6} "
+                   f"{r['gap'] or '-':>6}{mark}{vert:>5} {r['avg_hr'] or '-':>4} {r['end_hr'] or '-':>5}  {tgt}")
+    if any(r["compared_on"] == "gap" for r in s["reps"]):
+        click.echo("  (* = jugee sur le GAP, rep vallonnee)")
+
+    click.echo("\n  Par serie :")
+    for st in s["sets"]:
+        parts = [f"{st['reps']} reps", f"moy {st['mean_pace']}"]
+        if st["pace_cv_pct"] is not None:
+            parts.append(f"CV {st['pace_cv_pct']}%")
+        if st["fade_pct"] is not None:
+            parts.append(f"fin vs debut {st['fade_pct']:+.1f}%")
+        if st["end_hr_drift_bpm"] is not None:
+            parts.append(f"FC fin {st['end_hr_drift_bpm']:+d} bpm")
+        if st["with_target"]:
+            parts.append(f"cible {st['in_target']}/{st['with_target']}")
+        click.echo(f"    Serie {st['set']} : " + ", ".join(parts))
+
+    drops = [r for r in s["recoveries"] if r["hr_drop_60s"] is not None]
+    if drops:
+        click.echo("\n  Recup (FC debut -> variation en 60 s) : "
+                   + "  ".join(f"apres #{r['after_rep']}: {r['hr_start']} {-r['hr_drop_60s']:+d}" for r in drops))
+
+
+def _print_cycle(c: dict):
+    """Human-readable cycle tracking table."""
+    click.echo(f"\n{'=' * 92}")
+    click.echo("  SUIVI DU CYCLE")
+    if c["paces"]:
+        p = c["paces"]
+        click.echo(f"  VDOT {c['vdot']} — M {p['M']}  T {p['T']}  I {p['I']}  R {p['R']} /km")
+    click.echo(f"{'=' * 92}")
+    click.echo(f"  {'semaine':<10} {'run':>3} {'km':>5} {'heures':>7} {'D+':>5}  "
+               f"{'Z1-2':>5} {'Z3':>5} {'Z4-5':>5}  {'qual':>4} {'T':>4} {'I':>4} {'R':>4}  "
+               f"{'longue':>7} {'EF':>6}")
+    for w in c["weeks"]:
+        q = w["quality_by_zone_s"]
+        mins = lambda s: f"{round(s / 60)}'" if s else "-"
+        long_run = w["long_run"]["duration"][:-3] if w["long_run"] else "-"
+        ef = f"{w['easy_ef']:.3f}" if w["easy_ef"] else "-"
+        click.echo(
+            f"  {w['week_start']:<10} {w['runs']:>3} {w['km']:>5.1f} {w['time']:>7} {w['dplus']:>5}  "
+            f"{w['z12_pct']:>4.0f}% {w['z3_pct']:>4.0f}% {w['z45_pct']:>4.0f}%  "
+            f"{w['quality_sessions']:>4} {mins(q['T']):>4} {mins(q['I']):>4} {mins(q['R']):>4}  "
+            f"{long_run:>7} {ef:>6}"
+        )
+    click.echo("  (qual = seances de qualite ; T/I/R = minutes de reps a cette allure VDOT)")
+
+    if c["quality_sessions"]:
+        click.echo("\n  Seances de qualite :")
+        click.echo(f"    {'date':<10} {'seance':<20} {'reps':>4} {'travail':>8} {'allure':>6} "
+                   f"{'FC':>4} {'EF rep':>6} {'cible':>6} {'recup':>5}")
+        for s in c["quality_sessions"]:
+            tgt = f"{s['in_target']}/{s['with_target']}" if s["with_target"] else "-"
+            hrr = f"{-s['hr_drop_60s_mean']:+d}" if s["hr_drop_60s_mean"] is not None else "-"
+            click.echo(
+                f"    {s['date']:<10} {str(s['workout'])[:20]:<20} {s['reps']:>4} {s['work_time']:>8} "
+                f"{s['rep_pace'] or '-':>6} {s['rep_avg_hr'] or '-':>4} {s['rep_ef'] or '-':>6} "
+                f"{tgt:>6} {hrr:>5}"
+            )
 
 
 def _print_week_summary(summary: dict, start_date: int):

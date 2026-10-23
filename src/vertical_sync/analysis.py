@@ -254,3 +254,152 @@ def assess_week(week_summary: dict, activities: list[dict], start_date: int) -> 
             })
 
     return obs
+
+
+def assess_session(session: dict) -> list[dict]:
+    """Assess the execution of a quality session (output of analyze_session).
+
+    Flags only what the numbers show — target compliance, start too fast,
+    fade within a set, regularity, rising HR cost. Whether a fade was planned
+    (progressive set) or a miss was terrain is for the LLM to judge."""
+    obs = []
+
+    # --- Target compliance ---
+    s = session["summary"]
+    if s["with_target"]:
+        ratio = s["in_target"] / s["with_target"]
+        if ratio >= 0.8:
+            obs.append({
+                "type": "strength",
+                "category": "target",
+                "detail": f"{s['in_target']}/{s['with_target']} reps dans la cible",
+                "implication": "Seance executee comme prescrite",
+            })
+        elif ratio < 0.6:
+            obs.append({
+                "type": "weakness",
+                "category": "target",
+                "detail": f"Seulement {s['in_target']}/{s['with_target']} reps dans la cible",
+                "implication": "Cible mal calibree, ou execution a revoir (terrain, fatigue, depart)",
+            })
+
+    # --- Start too fast: first reps of a set well ahead of target ---
+    for st in session["sets"]:
+        reps = [r for r in session["reps"] if r["set"] == st["set"]]
+        early = [r["target_delta_s_per_km"] for r in reps[:2] if r["target_delta_s_per_km"] is not None]
+        if early and max(early) <= -5:
+            obs.append({
+                "type": "weakness",
+                "category": "pacing",
+                "detail": f"Serie {st['set']} : premieres reps {-max(early)}+ s/km plus rapides que la cible",
+                "implication": "Depart trop rapide — paye en fin de serie ou en recup",
+            })
+
+    # --- Per-set execution (sets of >= 3 reps) ---
+    for st in session["sets"]:
+        if st["reps"] < 3:
+            continue
+        fade = st["fade_pct"]
+        if fade is not None and fade <= -3:
+            obs.append({
+                "type": "weakness",
+                "category": "fade",
+                "detail": f"Serie {st['set']} : allure en baisse de {-fade:.1f}% entre debut et fin",
+                "implication": "Intensite ou volume au-dessus de ce qui est tenable ce jour-la",
+            })
+        elif fade is not None and fade >= 2:
+            obs.append({
+                "type": "info",
+                "category": "fade",
+                "detail": f"Serie {st['set']} : finit {fade:.1f}% plus vite qu'au debut",
+                "implication": "Progressif, ou debut de serie trop prudent",
+            })
+        cv = st["pace_cv_pct"]
+        if cv is not None and cv <= 2:
+            obs.append({
+                "type": "strength",
+                "category": "regularity",
+                "detail": f"Serie {st['set']} : reps tres regulieres (CV allure {cv}%)",
+                "implication": "Bonne maitrise de l'allure",
+            })
+        elif cv is not None and cv >= 6:
+            obs.append({
+                "type": "weakness",
+                "category": "regularity",
+                "detail": f"Serie {st['set']} : reps irregulieres (CV allure {cv}%)",
+                "implication": "Allure mal tenue (ou terrain variable — verifier vert_pct)",
+            })
+        # On short reps (30/30, 60/60) HR is still climbing over the first reps,
+        # so a rising end-of-rep HR is lag, not cost — only flag long reps.
+        drift = st["end_hr_drift_bpm"]
+        long_reps = st["work_time_s"] / st["reps"] >= 120
+        if long_reps and drift is not None and drift >= 8 and (fade is None or fade > -3):
+            obs.append({
+                "type": "info",
+                "category": "hr_cost",
+                "detail": f"Serie {st['set']} : FC de fin de rep +{drift} bpm a allure tenue",
+                "implication": "Cout cardiaque qui monte — fatigue ou chaleur",
+            })
+
+    # --- HR recovery between long reps ---
+    first, last = s["hr_drop_60s_first"], s["hr_drop_60s_last"]
+    if first is not None and last is not None and first - last >= 8:
+        obs.append({
+            "type": "info",
+            "category": "recovery",
+            "detail": f"Baisse de FC en 60 s de recup : {first} -> {last} bpm",
+            "implication": "Recuperation qui se degrade au fil de la seance",
+        })
+
+    return obs
+
+
+def assess_cycle(cycle: dict) -> list[dict]:
+    """Assess a training cycle (output of compute_cycle): intensity
+    distribution, trail maintenance and the easy-run EF trend. Weeks with
+    fewer than 3 runs (recovery, travel) are skipped for the distribution."""
+    obs = []
+    weeks = [w for w in cycle["weeks"] if w["runs"] >= 3]
+
+    # --- Intensity distribution: easy runs drifting into Z3 ---
+    grey = [w["week_start"] for w in weeks if w["z3_pct"] > 20]
+    if grey:
+        obs.append({
+            "type": "weakness",
+            "category": "polarization",
+            "detail": f"Z3 > 20% du temps sur {len(grey)} semaine(s) : {', '.join(grey)}",
+            "implication": "Footings qui glissent en zone grise — piege classique d'un bloc vitesse",
+        })
+    if weeks:
+        easy = sum(w["z12_pct"] for w in weeks) / len(weeks)
+        obs.append({
+            "type": "strength" if easy >= 75 else "info",
+            "category": "polarization",
+            "detail": f"{easy:.0f}% du temps en Z1-Z2 en moyenne sur {len(weeks)} semaine(s)",
+            "implication": "Repere 80/20 : la qualite ne paie que si le reste est vraiment facile",
+        })
+
+    # --- Trail maintenance: a long run every week ---
+    no_long = [w["week_start"] for w in weeks
+               if not w["long_run"] or w["long_run"]["duration_s"] < 90 * 60]
+    if no_long:
+        obs.append({
+            "type": "info",
+            "category": "trail_maintenance",
+            "detail": f"Pas de sortie >= 1h30 sur {len(no_long)} semaine(s) : {', '.join(no_long)}",
+            "implication": "Maintien trail : 1 longue vallonnee par semaine prevue au cycle",
+        })
+
+    # --- Easy-run EF trend (first vs last two measured weeks) ---
+    efs = [w["easy_ef"] for w in cycle["weeks"] if w["easy_ef"] is not None]
+    if len(efs) >= 4:
+        first, last = sum(efs[:2]) / 2, sum(efs[-2:]) / 2
+        change = (last - first) / first * 100
+        obs.append({
+            "type": "strength" if change >= 2 else "weakness" if change <= -2 else "info",
+            "category": "efficiency",
+            "detail": f"EF footings {first:.3f} -> {last:.3f} ({change:+.1f}%)",
+            "implication": "Tendance d'economie aerobie (temperature non corrigee — voir vs efficiency)",
+        })
+
+    return obs

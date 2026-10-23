@@ -51,6 +51,9 @@ All analysis commands support `--json` for structured, AI-readable output.
 | `vs week --start X --end Y [--json]` | Weekly summary + comparison to the plan |
 | `vs assess [--start X --end Y] [--json]` | Strengths / weaknesses assessment |
 | `vs efficiency [--start X --end Y] [--json]` | Efficiency factor (GAP/HR) trend over easy footing runs |
+| `vs cycle --start X [--end Y] [--json]` | Training-cycle tracking per week: volume, Z1-2/Z3/Z4-5 split, quality rep time by VDOT pace, long run, easy EF — plus a quality-session progression table |
+| `vs session <date> [--json]` | Quality-session execution (Garmin structured workout): reps vs target pace, regularity, fade, HR cost, HR recovery |
+| `vs vdot [--distance D --time T] [--json]` | VDOT (Daniels): race-time predictions + E/M/T/I/R training paces, from a performance or the config |
 | `vs plan [--week N] [--json]` | Show the training plan targets |
 | `vs pdf` | Generate a print-friendly plan PDF |
 
