@@ -41,6 +41,15 @@ name = "VO2max"
 min = 175
 max = 999
 
+# Reference VDOT (Jack Daniels) — drives the training pace zones (`vs vdot`).
+# Compute it from a recent race or all-out time trial:
+#   vs vdot --distance 10k --time 41:20
+# If this section is absent, `vs vdot` estimates VDOT from threshold_pace_s_per_km.
+[speed]
+vdot = 50.0
+source = "10k 41:20"          # the performance it comes from
+date = "2026-01-15"           # YYYY-MM-DD
+
 [race]
 name = "My Goal Race"
 date = "2026-06-20"           # YYYY-MM-DD

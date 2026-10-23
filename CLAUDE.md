@@ -31,6 +31,7 @@ All analysis commands support `--json` for structured AI-readable output.
 | `vs week --start X --end Y [--json]` | Weekly analysis with summary + plan comparison |
 | `vs assess [--start X --end Y] [--json]` | Strengths/weaknesses assessment |
 | `vs efficiency [--start X --end Y] [--json]` | Efficiency factor (GAP/HR) trend over easy footing runs (quality sessions excluded by measured Z4-Z5 intensity) |
+| `vs vdot [--distance D --time T] [--json]` | VDOT (Daniels–Gilbert): race-time predictions (1500m → marathon) + E/M/T/I/R training paces. From a race/time trial, else `[speed] vdot` in `config/athlete.toml`, else estimated from `threshold_pace_s_per_km`; T pace cross-checked against the config threshold |
 | `vs plan [--week N] [--json]` | Training plan targets (read from `coach/plan/*.md`) |
 | `vs recovery [--start X --end Y] [--json]` | Resting HR (daily) + overnight HRV history from Garmin (default: last 14 days) |
 | `vs weight [--start X --end Y] [--weekly] [--json]` | Weight + body composition (body fat %, muscle %, lean mass) from a Renpho smart scale (default: last 90 days; `--weekly` = mean per ISO week to smooth daily noise) |
@@ -45,6 +46,7 @@ src/vertical_sync/
 ├── config.py       # Loads athlete.toml + coach/plan frontmatter, paths, constants
 ├── fit_parser.py   # FIT parsing, metric extraction, weekly summary
 ├── gpx_parser.py   # GPX route parsing → race-course terrain profile (for pacing)
+├── vdot.py         # Daniels VDOT: race predictions + training pace zones
 ├── analysis.py     # Strengths/weaknesses assessment (activity + week level)
 └── cli.py          # Click CLI commands + output formatting
 ```

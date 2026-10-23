@@ -6,7 +6,7 @@ from pathlib import Path
 
 import click
 
-from .config import FIT_DIR, PLAN_WEEKS, RACE, get_plan_week
+from .config import FIT_DIR, PLAN_WEEKS, RACE, SPEED, THRESHOLD_PACE_S_PER_KM, get_plan_week
 from .fit_parser import (
     analyze_activity,
     compute_gradient_profile,
@@ -20,6 +20,14 @@ from .fit_parser import (
 )
 from .fit_parser import _session_start
 from .gpx_parser import analyze_gpx
+from .vdot import (
+    format_time_s,
+    parse_distance,
+    parse_time,
+    vdot_from_performance,
+    vdot_from_threshold_pace,
+    vdot_report,
+)
 from .analysis import assess_activity, assess_week
 
 
@@ -601,6 +609,51 @@ def course(gpx_path, as_json):
 
 
 # ---------------------------------------------------------------------------
+# vdot (race predictions + training pace zones)
+# ---------------------------------------------------------------------------
+
+@cli.command()
+@click.option("--distance", help="Race distance: 5k, 10k, semi, marathon, 3000m, or km (e.g. 8.5)")
+@click.option("--time", "time_str", help="Race time: MM:SS or H:MM:SS")
+@click.option("--json", "as_json", is_flag=True, help="JSON output")
+def vdot(distance, time_str, as_json):
+    """VDOT (Daniels): race-time predictions and training pace zones.
+
+    With --distance and --time, computes VDOT from that performance (a race or
+    all-out time trial). Without them, uses [speed] vdot from the athlete
+    config, or estimates it from threshold_pace_s_per_km if that section is
+    absent. The T pace is cross-checked against the config threshold pace.
+    """
+    if bool(distance) != bool(time_str):
+        click.echo("--distance and --time go together.", err=True)
+        sys.exit(1)
+
+    if distance:
+        try:
+            dist_m, time_s = parse_distance(distance), parse_time(time_str)
+        except ValueError:
+            click.echo(f"Can't parse --distance {distance} / --time {time_str}", err=True)
+            sys.exit(1)
+        value = vdot_from_performance(dist_m, time_s)
+        source = f"{distance} {format_time_s(time_s)}"
+    elif SPEED.get("vdot"):
+        value = SPEED["vdot"]
+        source = " ".join(str(s) for s in (SPEED.get("source"), SPEED.get("date")) if s) or "config"
+    elif THRESHOLD_PACE_S_PER_KM:
+        value = vdot_from_threshold_pace(THRESHOLD_PACE_S_PER_KM)
+        source = "estimated from threshold_pace_s_per_km (no [speed] vdot in config)"
+    else:
+        click.echo("No VDOT: pass --distance/--time or set [speed] vdot in the config.", err=True)
+        sys.exit(1)
+
+    report = vdot_report(value, source, THRESHOLD_PACE_S_PER_KM)
+    if as_json:
+        click.echo(json.dumps(report, indent=2))
+    else:
+        _print_vdot(report)
+
+
+# ---------------------------------------------------------------------------
 # week
 # ---------------------------------------------------------------------------
 
@@ -1142,6 +1195,30 @@ def _print_course(p: dict):
             bar_len = int(b["pct"] / 5)
             bar = "█" * bar_len + "░" * (20 - bar_len)
             click.echo(f"    {b['range']:>12} {bar} {b['pct']:5.1f}%  ({b['distance_m']/1000:.1f} km)")
+
+
+def _print_vdot(r: dict):
+    """Human-readable VDOT report."""
+    click.echo(f"\n{'=' * 60}")
+    click.echo(f"  VDOT {r['vdot']}  ({r['source']})")
+    click.echo(f"{'=' * 60}")
+
+    click.echo("\n  Predictions :")
+    for p in r["predictions"]:
+        click.echo(f"    {p['distance']:<9} {p['time']:>8}   ({p['pace']}/km)")
+
+    z = r["paces"]
+    click.echo("\n  Allures d'entrainement (/km) :")
+    click.echo(f"    E  endurance   {z['E']['fast_pace']} - {z['E']['slow_pace']}")
+    click.echo(f"    M  marathon    {z['M']['pace']}")
+    click.echo(f"    T  seuil       {z['T']['pace']}")
+    click.echo(f"    I  VO2max      {z['I']['pace']}")
+    click.echo(f"    R  repetitions {z['R']['pace']}")
+
+    c = r.get("threshold_check")
+    if c:
+        click.echo(f"\n  Seuil config {c['config_threshold_pace']}/km vs T VDOT {c['vdot_t_pace']}/km "
+                   f"({c['diff_s_per_km']:+d} s/km ; VDOT implicite config {c['vdot_implied_by_config']})")
 
 
 def _print_week_summary(summary: dict, start_date: int):

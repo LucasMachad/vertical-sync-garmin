@@ -46,6 +46,8 @@ THRESHOLD_PACE_S_PER_KM = _profile.get("threshold_pace_s_per_km")
 
 HR_ZONES = _athlete.get("hr_zones", [])
 RACE = _athlete.get("race", {})
+# Reference VDOT (vdot, source, date) — drives the training pace zones.
+SPEED = _athlete.get("speed", {})
 
 
 # ---------------------------------------------------------------------------
