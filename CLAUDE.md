@@ -39,7 +39,7 @@ All analysis commands support `--json` for structured AI-readable output.
 | `vs weight [--start X --end Y] [--weekly] [--json]` | Weight + body composition (body fat %, muscle %, lean mass) from a Renpho smart scale (default: last 90 days; `--weekly` = mean per ISO week to smooth daily noise) |
 | `vs download --start X --end Y` | Download FIT files from Garmin Connect |
 | `vs login` | Test Garmin Connect connection |
-| `vs pdf` | Generate training plan PDF |
+| `vs pdf [--week N]` | Generate training plan PDF (full block, or a one-page sheet for week N) |
 
 ## Architecture
 
