@@ -329,8 +329,11 @@ def assess_session(session: dict) -> list[dict]:
                 "detail": f"Serie {st['set']} : reps irregulieres (CV allure {cv}%)",
                 "implication": "Allure mal tenue (ou terrain variable — verifier vert_pct)",
             })
+        # On short reps (30/30, 60/60) HR is still climbing over the first reps,
+        # so a rising end-of-rep HR is lag, not cost — only flag long reps.
         drift = st["end_hr_drift_bpm"]
-        if drift is not None and drift >= 8 and (fade is None or fade > -3):
+        long_reps = st["work_time_s"] / st["reps"] >= 120
+        if long_reps and drift is not None and drift >= 8 and (fade is None or fade > -3):
             obs.append({
                 "type": "info",
                 "category": "hr_cost",
