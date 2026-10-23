@@ -31,6 +31,7 @@ All analysis commands support `--json` for structured AI-readable output.
 | `vs week --start X --end Y [--json]` | Weekly analysis with summary + plan comparison |
 | `vs assess [--start X --end Y] [--json]` | Strengths/weaknesses assessment |
 | `vs efficiency [--start X --end Y] [--json]` | Efficiency factor (GAP/HR) trend over easy footing runs (quality sessions excluded by measured Z4-Z5 intensity) |
+| `vs cycle --start X [--end Y] [--json]` | Training-cycle tracking per ISO week (running only): volume, time in Z1-2 / Z3 / Z4-5, quality rep time bucketed by VDOT pace (M/T/I/R), longest run, easy-footing EF. Plus one row per quality session (rep pace, HR, rep EF, target compliance, HR recovery) — compare like-for-like only (short reps read a high rep EF from HR lag). `assess_cycle` flags grey-zone weeks, 80/20 share, weeks without a ≥ 1h30 run, EF trend |
 | `vs session <date> [--json]` | Quality-session execution for a Garmin structured workout (1 lap = 1 step; active laps = reps, sets by workout step). Per rep: pace, GAP (lap barometric net grade, used on hilly reps), HR, end-of-rep HR, compliance with the step's pace/HR target or nearest VDOT pace when open. Per set: pace CV, fade, end-HR drift. HR drop over 60 s on recoveries ≥ 90 s. Plus `assess_session` observations |
 | `vs vdot [--distance D --time T] [--json]` | VDOT (Daniels–Gilbert): race-time predictions (1500m → marathon) + E/M/T/I/R training paces. From a race/time trial, else `[speed] vdot` in `config/athlete.toml`, else estimated from `threshold_pace_s_per_km`; T pace cross-checked against the config threshold |
 | `vs plan [--week N] [--json]` | Training plan targets (read from `coach/plan/*.md`) |
@@ -49,6 +50,7 @@ src/vertical_sync/
 ├── gpx_parser.py   # GPX route parsing → race-course terrain profile (for pacing)
 ├── vdot.py         # Daniels VDOT: race predictions + training pace zones
 ├── session.py      # Quality-session analysis: reps, targets, execution KPIs
+├── cycle.py        # Training-cycle tracking: weekly intensity, quality volume, progression
 ├── analysis.py     # Strengths/weaknesses assessment (activity + week level)
 └── cli.py          # Click CLI commands + output formatting
 ```
@@ -58,7 +60,7 @@ src/vertical_sync/
   and the weekly plan targets from `coach/plan/*.md` TOML frontmatter. No
   hardcoded personal data.
 - **fit_parser.py**: `parse_fit()`, `analyze_activity()`, `compute_week_summary()`, `find_fit_files()`
-- **analysis.py**: `assess_activity()`, `assess_week()` and `assess_session()` return typed observations (strength/weakness/info)
+- **analysis.py**: `assess_activity()`, `assess_week()`, `assess_session()` and `assess_cycle()` return typed observations (strength/weakness/info)
 - **cli.py**: Click commands, human + JSON output modes
 
 ## Coach memory & skills

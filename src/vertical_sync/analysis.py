@@ -352,3 +352,54 @@ def assess_session(session: dict) -> list[dict]:
         })
 
     return obs
+
+
+def assess_cycle(cycle: dict) -> list[dict]:
+    """Assess a training cycle (output of compute_cycle): intensity
+    distribution, trail maintenance and the easy-run EF trend. Weeks with
+    fewer than 3 runs (recovery, travel) are skipped for the distribution."""
+    obs = []
+    weeks = [w for w in cycle["weeks"] if w["runs"] >= 3]
+
+    # --- Intensity distribution: easy runs drifting into Z3 ---
+    grey = [w["week_start"] for w in weeks if w["z3_pct"] > 20]
+    if grey:
+        obs.append({
+            "type": "weakness",
+            "category": "polarization",
+            "detail": f"Z3 > 20% du temps sur {len(grey)} semaine(s) : {', '.join(grey)}",
+            "implication": "Footings qui glissent en zone grise — piege classique d'un bloc vitesse",
+        })
+    if weeks:
+        easy = sum(w["z12_pct"] for w in weeks) / len(weeks)
+        obs.append({
+            "type": "strength" if easy >= 75 else "info",
+            "category": "polarization",
+            "detail": f"{easy:.0f}% du temps en Z1-Z2 en moyenne sur {len(weeks)} semaine(s)",
+            "implication": "Repere 80/20 : la qualite ne paie que si le reste est vraiment facile",
+        })
+
+    # --- Trail maintenance: a long run every week ---
+    no_long = [w["week_start"] for w in weeks
+               if not w["long_run"] or w["long_run"]["duration_s"] < 90 * 60]
+    if no_long:
+        obs.append({
+            "type": "info",
+            "category": "trail_maintenance",
+            "detail": f"Pas de sortie >= 1h30 sur {len(no_long)} semaine(s) : {', '.join(no_long)}",
+            "implication": "Maintien trail : 1 longue vallonnee par semaine prevue au cycle",
+        })
+
+    # --- Easy-run EF trend (first vs last two measured weeks) ---
+    efs = [w["easy_ef"] for w in cycle["weeks"] if w["easy_ef"] is not None]
+    if len(efs) >= 4:
+        first, last = sum(efs[:2]) / 2, sum(efs[-2:]) / 2
+        change = (last - first) / first * 100
+        obs.append({
+            "type": "strength" if change >= 2 else "weakness" if change <= -2 else "info",
+            "category": "efficiency",
+            "detail": f"EF footings {first:.3f} -> {last:.3f} ({change:+.1f}%)",
+            "implication": "Tendance d'economie aerobie (temperature non corrigee — voir vs efficiency)",
+        })
+
+    return obs

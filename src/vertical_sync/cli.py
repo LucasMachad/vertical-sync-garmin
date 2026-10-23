@@ -28,7 +28,8 @@ from .vdot import (
     vdot_from_threshold_pace,
     vdot_report,
 )
-from .analysis import assess_activity, assess_session, assess_week
+from .analysis import assess_activity, assess_cycle, assess_session, assess_week
+from .cycle import compute_cycle
 from .session import analyze_session
 
 
@@ -707,6 +708,45 @@ def session(target, as_json):
 
 
 # ---------------------------------------------------------------------------
+# cycle (block tracking: intensity, quality volume, progression)
+# ---------------------------------------------------------------------------
+
+@cli.command()
+@click.option("--start", required=True, help="Cycle start date (YYYYMMDD or YYYY-MM-DD)")
+@click.option("--end", default=None, help="Cycle end date (default: today)")
+@click.option("--json", "as_json", is_flag=True, help="JSON output")
+def cycle(start, end, as_json):
+    """Track a training cycle week by week.
+
+    Per ISO week (running only): volume, time in Z1-Z2 / Z3 / Z4-Z5, quality
+    rep time by VDOT pace (M/T/I/R), longest run, easy-footing EF. Then one row
+    per quality session (rep pace, HR, rep EF, target compliance, HR recovery)
+    to compare like-for-like sessions across the block.
+    """
+    import datetime as _dt
+
+    start_d = parse_date(start)
+    end_d = parse_date(end) if end else int(_dt.date.today().strftime("%Y%m%d"))
+    files = find_fit_files(start_d, end_d)
+    if not files:
+        click.echo(f"No FIT files for {start_d}..{end_d}", err=True)
+        sys.exit(1)
+
+    vdot_value, vdot_source = _reference_vdot()
+    result = compute_cycle(files, vdot_value)
+    result["vdot_source"] = vdot_source
+    assessment = assess_cycle(result)
+
+    if as_json:
+        click.echo(json.dumps({"cycle": result, "assessment": assessment}, indent=2, default=str))
+    else:
+        _print_cycle(result)
+        if assessment:
+            click.echo("")
+            _print_assessment(assessment)
+
+
+# ---------------------------------------------------------------------------
 # week
 # ---------------------------------------------------------------------------
 
@@ -1330,6 +1370,44 @@ def _print_session(s: dict):
     if drops:
         click.echo("\n  Recup (FC debut -> variation en 60 s) : "
                    + "  ".join(f"apres #{r['after_rep']}: {r['hr_start']} {-r['hr_drop_60s']:+d}" for r in drops))
+
+
+def _print_cycle(c: dict):
+    """Human-readable cycle tracking table."""
+    click.echo(f"\n{'=' * 92}")
+    click.echo("  SUIVI DU CYCLE")
+    if c["paces"]:
+        p = c["paces"]
+        click.echo(f"  VDOT {c['vdot']} — M {p['M']}  T {p['T']}  I {p['I']}  R {p['R']} /km")
+    click.echo(f"{'=' * 92}")
+    click.echo(f"  {'semaine':<10} {'run':>3} {'km':>5} {'heures':>7} {'D+':>5}  "
+               f"{'Z1-2':>5} {'Z3':>5} {'Z4-5':>5}  {'qual':>4} {'T':>4} {'I':>4} {'R':>4}  "
+               f"{'longue':>7} {'EF':>6}")
+    for w in c["weeks"]:
+        q = w["quality_by_zone_s"]
+        mins = lambda s: f"{round(s / 60)}'" if s else "-"
+        long_run = w["long_run"]["duration"][:-3] if w["long_run"] else "-"
+        ef = f"{w['easy_ef']:.3f}" if w["easy_ef"] else "-"
+        click.echo(
+            f"  {w['week_start']:<10} {w['runs']:>3} {w['km']:>5.1f} {w['time']:>7} {w['dplus']:>5}  "
+            f"{w['z12_pct']:>4.0f}% {w['z3_pct']:>4.0f}% {w['z45_pct']:>4.0f}%  "
+            f"{w['quality_sessions']:>4} {mins(q['T']):>4} {mins(q['I']):>4} {mins(q['R']):>4}  "
+            f"{long_run:>7} {ef:>6}"
+        )
+    click.echo("  (qual = seances de qualite ; T/I/R = minutes de reps a cette allure VDOT)")
+
+    if c["quality_sessions"]:
+        click.echo("\n  Seances de qualite :")
+        click.echo(f"    {'date':<10} {'seance':<20} {'reps':>4} {'travail':>8} {'allure':>6} "
+                   f"{'FC':>4} {'EF rep':>6} {'cible':>6} {'recup':>5}")
+        for s in c["quality_sessions"]:
+            tgt = f"{s['in_target']}/{s['with_target']}" if s["with_target"] else "-"
+            hrr = f"{-s['hr_drop_60s_mean']:+d}" if s["hr_drop_60s_mean"] is not None else "-"
+            click.echo(
+                f"    {s['date']:<10} {str(s['workout'])[:20]:<20} {s['reps']:>4} {s['work_time']:>8} "
+                f"{s['rep_pace'] or '-':>6} {s['rep_avg_hr'] or '-':>4} {s['rep_ef'] or '-':>6} "
+                f"{tgt:>6} {hrr:>5}"
+            )
 
 
 def _print_week_summary(summary: dict, start_date: int):
