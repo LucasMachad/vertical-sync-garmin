@@ -132,6 +132,7 @@ def _renpho_client():
 
     from dotenv import load_dotenv
     from renpho import RenphoClient
+    from renpho.constants import APP_VERSION, PLATFORM
 
     load_dotenv()
     try:
@@ -144,6 +145,10 @@ def _renpho_client():
         )
         sys.exit(1)
     client = RenphoClient(email=email, password=password)
+    # renpho-api 0.2.0 sends no appVersion header on login, and the gateway now
+    # picks its decryption key from it → code -114. Send it on every call
+    # (upstream fix: danvaneijck/renpho-api#13, unreleased).
+    client._session.headers.update({"appVersion": APP_VERSION, "platform": PLATFORM})
     client.login()
     return client
 

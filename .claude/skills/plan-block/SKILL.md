@@ -23,6 +23,11 @@ reads only the numeric targets you set in each week's frontmatter. Read
    athlete's reality: respect injury watch-points, don't stack the two hard
    sessions (hilly + quality) on back-to-back days, place the long run on the
    weekend, ramp load sensibly, end with a taper.
+   - **Recurring routines.** If `coach/athlete.md` has a "Routines récurrentes"
+     section (e.g. a weekly strength/tendon routine), schedule each one in
+     *every* week's session table at its stated frequency and placement rules
+     (e.g. same day as a hard session, never the eve of a quality day). Drop or
+     halve them only in race week, and say so in the prose.
 
 3. **Write one file per week.** `coach/plan/YYYY-MM-DD.md` named by the Monday of
    the week (template: `templates/plan-week.md`). Each file is:
