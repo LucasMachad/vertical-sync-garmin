@@ -132,6 +132,7 @@ def _renpho_client():
 
     from dotenv import load_dotenv
     from renpho import RenphoClient
+    from renpho.constants import APP_VERSION, PLATFORM
 
     load_dotenv()
     try:
@@ -144,6 +145,10 @@ def _renpho_client():
         )
         sys.exit(1)
     client = RenphoClient(email=email, password=password)
+    # renpho-api 0.2.0 sends no appVersion header on login, and the gateway now
+    # picks its decryption key from it → code -114. Send it on every call
+    # (upstream fix: danvaneijck/renpho-api#13, unreleased).
+    client._session.headers.update({"appVersion": APP_VERSION, "platform": PLATFORM})
     client.login()
     return client
 
@@ -1192,17 +1197,27 @@ def _render_week_html(meta: dict, body_md: str) -> str:
     )
 
 
-def _html_to_pdf(html_path: Path, pdf_path: Path) -> int | None:
+PDF_WAIT_S = 30  # max wait for the browser to write the PDF (cold Edge start is slow)
+
+
+def _html_to_pdf(html_path: Path, pdf_path: Path) -> tuple[int, bool] | None:
     """Render an HTML file to PDF via headless Chromium.
 
-    Returns the subprocess exit code, or None if no browser was found. The PDF
-    is written only on success (exit 0)."""
+    Returns ``(exit code, fresh)`` — ``fresh`` is True once a PDF newer than
+    any previous one exists — or None if no browser was found.
+
+    Edge can exit before the PDF is on disk, so existence right after the
+    process returns proves nothing either way: a first render reads as a
+    failure, and a re-render reads the stale previous PDF as a success. We
+    wait (bounded) for a file newer than the one we started with."""
     import subprocess
     import tempfile
+    import time
 
     browser = _find_chromium()
     if not browser:
         return None
+    before = pdf_path.stat().st_mtime_ns if pdf_path.exists() else None
     with tempfile.TemporaryDirectory() as tmp:
         result = subprocess.run(
             [
@@ -1212,7 +1227,23 @@ def _html_to_pdf(html_path: Path, pdf_path: Path) -> int | None:
             ],
             capture_output=True, text=True,
         )
-    return result.returncode
+
+    def _fresh() -> bool:
+        if not pdf_path.exists():
+            return False
+        st = pdf_path.stat()
+        return st.st_size > 0 and (before is None or st.st_mtime_ns > before)
+
+    if result.returncode == 0:
+        deadline = time.monotonic() + PDF_WAIT_S
+        while not _fresh() and time.monotonic() < deadline:
+            time.sleep(0.25)
+        # Let a still-growing file settle before reporting it.
+        size = -1
+        while _fresh() and pdf_path.stat().st_size != size and time.monotonic() < deadline:
+            size = pdf_path.stat().st_size
+            time.sleep(0.25)
+    return result.returncode, _fresh()
 
 
 def _find_chromium() -> str | None:
@@ -1288,13 +1319,14 @@ def pdf(week_num):
     manual_hint = (
         "Open the HTML and use Ctrl+P -> Save as PDF (A4)."
     )
-    code = _html_to_pdf(html_path, pdf_path)
-    if code is None:
+    rendered = _html_to_pdf(html_path, pdf_path)
+    if rendered is None:
         click.echo(f"HTML generated: {html_path}")
         click.echo("No Chromium browser found for automatic PDF rendering. "
                    + manual_hint, err=True)
         return
-    if code != 0 or not pdf_path.exists():
+    code, fresh = rendered
+    if code != 0 or not fresh:
         click.echo(f"HTML generated: {html_path}")
         click.echo(f"Automatic PDF rendering failed (exit {code}). " + manual_hint,
                    err=True)
